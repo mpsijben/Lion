@@ -1,4 +1,4 @@
-# 🦁 LION — Language for Intelligent Orchestration Networks
+# 🦁 LION - Language for Intelligent Orchestration Networks
 
 ## Complete Implementation Specification v1.0
 
@@ -49,16 +49,16 @@ But crucially, Lion makes this **as easy as the single-prompt approach**. No new
 
 ### The One-Liner
 
-**Lion is composable Unix-style pipes for AI agent orchestration, with pipeline functions that don't exist anywhere else, running inside Claude Code with zero token overhead for orchestration.**
+**Lion is composable Unix-style pipes for AI agent orchestration - multi-agent deliberation, adversarial review, and unique pipeline functions like `devil()` and `future()`, running inside Claude Code with cost-optimized multi-LLM support.**
 
 ### Core Principles
 
 1. **Zero friction**: Typing `lion "do X"` must be as easy as typing a normal prompt
-2. **Zero waste**: The orchestration layer costs zero tokens — it's pure Python
+2. **Smart spending**: The orchestration layer is pure Python (zero tokens). Cost profiles and free LLMs (Gemini, Ollama) minimize spend on deliberation phases
 3. **Composable**: Pipeline functions chain like Unix pipes: `-> pride(3) -> review() -> devil()`
 4. **Smart defaults**: Lion chooses the right strategy if you don't specify one
 5. **Extensible**: Anyone can add custom pipeline functions
-6. **Multi-LLM**: Mix Claude, Gemini, Codex, Ollama — use the right brain for the right job
+6. **Multi-LLM**: Mix Claude, Gemini, Codex, Ollama - use the right brain for the right job
 7. **Self-building**: Once the core works, all further Lion development happens through Lion itself
 
 ---
@@ -69,46 +69,49 @@ But crucially, Lion makes this **as easy as the single-prompt approach**. No new
 
 | Existing Tool | What It Does | Why Lion Is Different |
 |---|---|---|
-| CrewAI, AutoGen, LangGraph | Multi-agent frameworks in Python | Require 50-500 lines of Python setup. Lion is one line. |
-| Verdant AI | Parallel Claude Code agents | No deliberation, no pipeline composition, no mixed LLMs |
-| Multi-Agent Debate (academic) | LLMs debating answers | Only applied to math/trivia, never to software engineering |
-| RouteLLM, Martian | Smart model routing | Route to ONE model, don't make models collaborate |
+| CrewAI, AutoGen, LangGraph | Multi-agent frameworks in Python | Require Python setup (15-30 lines minimum, 100+ for production). Lion is one CLI line with zero boilerplate. |
+| ChatDev, MetaGPT | Multi-agent software development | Role-based collaboration for code, but no composable pipeline syntax. Users can't mix/match steps or create custom flows. |
+| Verdent | Parallel AI coding agents in VS Code | Multi-model but no user-facing pipeline composition, no deliberation-style debate. |
+| LangChain LCEL | Pipe-style composition (`prompt \| model \| parser`) | Chains components, not deliberating agents. No built-in pride/devil/future functions. |
+| RouteLLM, Martian | Smart model routing | Route to ONE model per query, don't make models collaborate |
 | Claude Code hooks projects | Various hook-based automations | Task-specific, not a general orchestration language |
 
 ### What Lion Does That Nothing Else Does
 
 #### 1. The Pipeline as First-Class Concept
-No tool lets users compose AI orchestration in a single line:
+While composable AI pipelines exist (LangChain LCEL chains components with `|`), no tool lets users compose **multi-agent deliberation, adversarial review, and deployment** in a single CLI line:
 ```
 lion "Build X" -> pride(3) -> devil() -> future(6m) -> review() -> test() -> pr()
 ```
-This is the Unix pipe philosophy applied to AI agents. It doesn't exist anywhere.
+This is the Unix pipe philosophy applied to AI agent orchestration - not just model chaining, but agents that debate, challenge, and build together.
 
 #### 2. Asymmetric Multi-LLM Deliberation
-Existing debate research uses identical models with different personas. Lion uses **structurally different LLMs** that have fundamentally different training, biases, and strengths:
+Multi-agent debate for software engineering exists (ChatDev, MetaGPT, AutoGen), but these frameworks use agents of the same model with different *personas*. Lion uses **structurally different LLMs** that have fundamentally different training, biases, and strengths:
 ```
 -> pride(claude, gemini, codex)
 ```
-This isn't role-playing — it's genuine cognitive diversity.
+This isn't role-playing - it's genuine cognitive diversity.
 
-#### 3. Pipeline Functions That Don't Exist Anywhere
+#### 3. Pipeline Functions as Reusable Building Blocks
 
-- **`devil()`** — A contrarian agent that challenges the consensus. Not bug-finding (that's `review()`), but challenging assumptions, architecture decisions, and approach choices. "Your pride agreed on JWT tokens. Here's why that will hurt you in 6 months."
+The devil's advocate concept exists in AI (AWS Bedrock case studies, academic research), and code review/audit tools exist as standalone products. What's new is packaging these as **composable, named pipeline steps** that chain together:
 
-- **`future(Nm)`** — Time-travel review. An agent that evaluates your code from the perspective of N months in the future. "I'm a developer using this system 6 months from now. These are my frustrations and what I wish you'd built differently."
+- **`devil()`** - A contrarian agent that challenges the consensus. Not bug-finding (that's `review()`), but challenging assumptions, architecture decisions, and approach choices. "Your pride agreed on JWT tokens. Here's why that will hurt you in 6 months."
 
-- **`onboard()`** — Generates documentation as if a new team member starts tomorrow. Not code comments, but "here's WHY we built it this way, what we considered and rejected, and what you need to know."
+- **`future(Nm)`** - Time-travel review. An agent that evaluates your code from the perspective of N months in the future. No existing tool offers this perspective. "I'm a developer using this system 6 months from now. These are my frustrations and what I wish you'd built differently."
 
-- **`cost()`** — Estimates infrastructure/cloud costs for what was just built.
+- **`onboard()`** - Generates documentation as if a new team member starts tomorrow. Not code comments, but "here's WHY we built it this way, what we considered and rejected, and what you need to know."
 
-- **`audit()`** — Security audit against OWASP top 10, dependency analysis, and attack surface review.
+- **`cost()`** - Estimates infrastructure/cloud costs for what was just built.
 
-- **`explain()`** — Documents the architectural decisions and rationale, not the code itself.
+- **`audit()`** - Security audit against OWASP top 10, dependency analysis, and attack surface review.
 
-- **`migrate()`** — Generates a zero-downtime migration plan from current state to the new code.
+- **`explain()`** - Documents the architectural decisions and rationale, not the code itself.
 
-#### 4. Zero-Token Orchestration via Claude Code Hook
-Lion intercepts prompts at the `UserPromptSubmit` hook level — before Claude ever sees them. The entire orchestration (parsing, scheduling, agent coordination) happens in Python. Only actual thinking work costs tokens.
+- **`migrate()`** - Generates a zero-downtime migration plan from current state to the new code.
+
+#### 4. Orchestration via Claude Code Hook
+Lion intercepts prompts at the `UserPromptSubmit` hook level - before Claude ever sees them. The orchestration logic (parsing, scheduling, agent coordination, shared memory management) happens in Python at zero token cost. The LLM calls themselves (propose, critique, converge, implement) do consume tokens - a `pride(3) -> review()` pipeline uses roughly ~13 LLM calls. Cost profiles (cheap/balanced/premium) and mixed free providers (Gemini, Ollama) help manage this overhead.
 
 ---
 
@@ -197,7 +200,7 @@ Step 6: OUTPUT
 
 ```bash
 #!/bin/bash
-# install.sh — Lion installer
+# install.sh - Lion installer
 
 LION_DIR="$HOME/.lion"
 
@@ -277,7 +280,7 @@ echo "Config: ~/.lion/config.toml"
 ```python
 #!/usr/bin/env python3
 """
-Lion — UserPromptSubmit hook for Claude Code.
+Lion - UserPromptSubmit hook for Claude Code.
 Intercepts prompts starting with "lion " and routes them
 to the Lion orchestrator. Zero tokens consumed.
 """
@@ -301,10 +304,10 @@ def main():
 
     # Check if this is a lion command
     if not prompt.lower().startswith("lion "):
-        # Not a lion command — pass through to Claude Code normally
+        # Not a lion command - pass through to Claude Code normally
         sys.exit(0)
 
-    # It IS a lion command — extract the actual prompt
+    # It IS a lion command - extract the actual prompt
     lion_input = prompt[5:].strip()  # Remove "lion " prefix
 
     # Get working directory from hook context
@@ -312,7 +315,7 @@ def main():
     session_id = hook_input.get("session_id", "unknown")
 
     # Start Lion orchestrator as a separate process
-    # This runs independently — Claude Code doesn't wait for it
+    # This runs independently - Claude Code doesn't wait for it
     env = os.environ.copy()
     env["LION_SESSION_ID"] = session_id
     env["LION_CWD"] = cwd
@@ -346,7 +349,7 @@ lion <prompt> [-> <function>(<args>) [-> <function>(<args>) ...]]
 
 ### Usage Levels
 
-#### Level 1: Beginner (no pipeline — Lion decides)
+#### Level 1: Beginner (no pipeline - Lion decides)
 ```
 lion "Fix the login bug"
   → Lion detects: simple task → 1 agent
@@ -406,7 +409,7 @@ DEFAULT_PIPELINES = {
 
 ### Core Functions
 
-#### `pride(n)` — Multi-Agent Deliberation
+#### `pride(n)` - Multi-Agent Deliberation
 The heart of Lion. Spawns N agents that propose, critique, and converge on a solution.
 
 ```
@@ -486,7 +489,7 @@ TASKS:
 """
 ```
 
-#### `review()` — Code Review
+#### `review()` - Code Review
 A separate agent reviews all code changes for quality.
 
 ```
@@ -520,7 +523,7 @@ If issues are critical, provide the corrected code.
 """
 ```
 
-#### `test()` — Test Runner
+#### `test()` - Test Runner
 Runs existing tests. If tests fail, an agent fixes them (up to 3 retries).
 
 ```
@@ -528,7 +531,7 @@ test()             # Run and auto-fix
 test(nofix)        # Run only, report failures
 ```
 
-#### `pr(branch)` — Pull Request
+#### `pr(branch)` - Pull Request
 Creates a git branch, commits changes, and optionally creates a PR.
 
 ```
@@ -538,7 +541,7 @@ pr("feature/stripe-checkout") # Named branch
 
 ### Unique Functions (exist nowhere else)
 
-#### `devil()` — Contrarian / Devil's Advocate
+#### `devil()` - Contrarian / Devil's Advocate
 Challenges the consensus. Does NOT look for bugs (that's review). Instead challenges **decisions, assumptions, and architectural choices**.
 
 ```
@@ -584,11 +587,11 @@ For each challenge:
 - Rate severity: 🔴 rethink now / 🟡 consider / 🟢 minor concern
 
 Be genuinely adversarial. Don't softball it. If the approach is
-actually solid, say so — but really try to break it first.
+actually solid, say so - but really try to break it first.
 """
 ```
 
-#### `future(Nm)` — Time-Travel Review
+#### `future(Nm)` - Time-Travel Review
 Evaluates code from the perspective of a developer N months in the future.
 
 ```
@@ -632,7 +635,7 @@ Be specific. Use concrete scenarios. Don't be vague.
 """
 ```
 
-#### `onboard()` — Onboarding Documentation
+#### `onboard()` - Onboarding Documentation
 Generates documentation for a new team member.
 
 ```
@@ -667,7 +670,7 @@ DECISIONS MADE:
 """
 ```
 
-#### `audit()` — Security Audit
+#### `audit()` - Security Audit
 ```
 AUDIT_PROMPT = """
 Perform a security audit on the following code changes.
@@ -696,7 +699,7 @@ For each finding:
 """
 ```
 
-#### `cost()` — Infrastructure Cost Estimation
+#### `cost()` - Infrastructure Cost Estimation
 ```
 COST_PROMPT = """
 Estimate the infrastructure/cloud costs for the following code
@@ -724,7 +727,7 @@ cost $X per Y events").
 """
 ```
 
-#### `explain()` — Decision Documentation
+#### `explain()` - Decision Documentation
 ```
 EXPLAIN_PROMPT = """
 Document the architectural decisions made in this code.
@@ -746,7 +749,7 @@ DELIBERATION HISTORY (if available):
 """
 ```
 
-#### `migrate()` — Migration Plan
+#### `migrate()` - Migration Plan
 ```
 MIGRATE_PROMPT = """
 Create a zero-downtime migration plan from the current state
@@ -887,7 +890,7 @@ class ClaudeProvider(Provider):
 {prompt}
 
 IMPORTANT: Make the actual code changes. Edit the files directly.
-Create new files as needed. Do not just describe what to do — do it.
+Create new files as needed. Do not just describe what to do - do it.
 """
         return self.ask(impl_prompt, cwd=cwd)
 ```
@@ -940,7 +943,7 @@ class GeminiProvider(Provider):
         return self.ask(prompt, cwd=cwd)
 ```
 
-### Ollama Provider (Local Models — Free)
+### Ollama Provider (Local Models - Free)
 
 ```python
 # providers/ollama.py
@@ -991,7 +994,7 @@ class OllamaProvider(Provider):
         return self.ask(prompt, cwd=cwd)
 ```
 
-### API Provider (Generic — for any OpenAI-compatible API)
+### API Provider (Generic - for any OpenAI-compatible API)
 
 ```python
 # providers/api.py
@@ -1487,66 +1490,66 @@ low_pipeline = ""  # single agent, no pipeline
 
 ## 12. Implementation Phases
 
-### Phase 1: Core (MVP) — "Lion can roar"
+### Phase 1: Core (MVP) - "Lion can roar"
 **Goal**: `lion "prompt" -> pride(3)` works from Claude Code.
 
 Build:
-- [ ] `hook.py` — Intercepts `lion ` prefix in Claude Code
-- [ ] `lion.py` — Main CLI entry point
-- [ ] `parser.py` — Splits prompt from pipeline, parses pipeline functions
-- [ ] `providers/claude.py` — Claude Code CLI wrapper
-- [ ] `functions/pride.py` — Basic pride: propose → critique → converge → implement
-- [ ] `memory.py` — Shared JSONL memory
-- [ ] `display.py` — Terminal output formatting
+- [ ] `hook.py` - Intercepts `lion ` prefix in Claude Code
+- [ ] `lion.py` - Main CLI entry point
+- [ ] `parser.py` - Splits prompt from pipeline, parses pipeline functions
+- [ ] `providers/claude.py` - Claude Code CLI wrapper
+- [ ] `functions/pride.py` - Basic pride: propose → critique → converge → implement
+- [ ] `memory.py` - Shared JSONL memory
+- [ ] `display.py` - Terminal output formatting
 
 Test: `lion "Build a hello world API" -> pride(3)` should produce working code.
 
-### Phase 2: Pipeline & Review — "The pride hunts"
+### Phase 2: Pipeline & Review - "The pride hunts"
 **Goal**: Full pipeline composition with review and test.
 
 Build:
-- [ ] `pipeline.py` — Pipeline executor that chains functions
-- [ ] `functions/review.py` — Code review function
-- [ ] `functions/test.py` — Test runner with auto-fix
-- [ ] `functions/pr.py` — Git branch + PR creation
-- [ ] `escalation.py` — User interaction for stuck agents
-- [ ] Smart defaults — Complexity detection without LLM
+- [ ] `pipeline.py` - Pipeline executor that chains functions
+- [ ] `functions/review.py` - Code review function
+- [ ] `functions/test.py` - Test runner with auto-fix
+- [ ] `functions/pr.py` - Git branch + PR creation
+- [ ] `escalation.py` - User interaction for stuck agents
+- [ ] Smart defaults - Complexity detection without LLM
 
 Test: `lion "Build Stripe checkout" -> pride(3) -> review() -> test() -> pr("feature/stripe")` should produce reviewed, tested code on a branch.
 
-### Phase 3: Unique Functions — "The king's weapons"
+### Phase 3: Unique Functions - "The king's weapons"
 **Goal**: Functions that exist nowhere else.
 
 Build:
-- [ ] `functions/devil.py` — Contrarian / devil's advocate
-- [ ] `functions/future.py` — Time-travel review
-- [ ] `functions/onboard.py` — Onboarding documentation
-- [ ] `functions/audit.py` — Security audit
-- [ ] `functions/explain.py` — Decision documentation
-- [ ] `functions/cost.py` — Infrastructure cost estimation
-- [ ] `functions/migrate.py` — Migration plan generation
+- [ ] `functions/devil.py` - Contrarian / devil's advocate
+- [ ] `functions/future.py` - Time-travel review
+- [ ] `functions/onboard.py` - Onboarding documentation
+- [ ] `functions/audit.py` - Security audit
+- [ ] `functions/explain.py` - Decision documentation
+- [ ] `functions/cost.py` - Infrastructure cost estimation
+- [ ] `functions/migrate.py` - Migration plan generation
 
 Test: `lion "Build auth system" -> pride(3) -> devil() -> future(6m) -> review()` should produce code that has been challenged, future-proofed, and reviewed.
 
-### Phase 4: Multi-LLM — "The diverse pride"
+### Phase 4: Multi-LLM - "The diverse pride"
 **Goal**: Mixed LLM support.
 
 Build:
-- [ ] `providers/gemini.py` — Gemini CLI wrapper
-- [ ] `providers/ollama.py` — Local model wrapper
-- [ ] `providers/api.py` — Generic API wrapper
+- [ ] `providers/gemini.py` - Gemini CLI wrapper
+- [ ] `providers/ollama.py` - Local model wrapper
+- [ ] `providers/api.py` - Generic API wrapper
 - [ ] Provider selection in pride syntax: `pride(claude, gemini, ollama)`
 - [ ] Cost profiles (cheap, balanced, premium)
 - [ ] Cost tracking and rate limit awareness
 
 Test: `lion "Build feature" -> pride(claude, gemini, ollama) -> review(claude)` should use multiple LLMs in deliberation.
 
-### Phase 5: Patterns & Extensions — "The pride's wisdom"
+### Phase 5: Patterns & Extensions - "The pride's wisdom"
 **Goal**: Saved patterns and custom functions.
 
 Build:
-- [ ] `patterns.py` — Save and load custom patterns
-- [ ] `custom_functions.py` — User-defined pipeline functions
+- [ ] `patterns.py` - Save and load custom patterns
+- [ ] `custom_functions.py` - User-defined pipeline functions
 - [ ] `lion pattern <name> = <pipeline>` command
 - [ ] `lion function <name> "<description>"` command
 - [ ] Per-project `.lion/` config directory
@@ -1554,7 +1557,7 @@ Build:
 
 Test: `lion pattern ship = -> pride(3) -> review() -> test() -> pr()` then `lion "Build X" -> ship()` should work.
 
-### Phase 6: Self-Build — "Lion builds Lion"
+### Phase 6: Self-Build - "Lion builds Lion"
 **Goal**: Use Lion to develop Lion itself.
 
 Once phases 1-5 are complete:
@@ -1623,7 +1626,7 @@ Once phases 1-5 are complete:
 ```python
 #!/usr/bin/env python3
 """
-🦁 Lion — Language for Intelligent Orchestration Networks
+🦁 Lion - Language for Intelligent Orchestration Networks
 
 Usage:
     lion "Build a feature"
@@ -1667,7 +1670,7 @@ def detect_complexity(prompt: str, config: dict) -> str:
 
 def main():
     if len(sys.argv) < 2:
-        print("🦁 Lion — Language for Intelligent Orchestration Networks")
+        print("🦁 Lion - Language for Intelligent Orchestration Networks")
         print()
         print("Usage:")
         print('  lion "Build a feature"')
@@ -1820,7 +1823,7 @@ def parse_step(step_str: str, config: dict) -> PipelineStep:
     # Parse function name and arguments
     match = re.match(r'(\w+)\((.*?)\)', step_str)
     if not match:
-        # No parentheses — treat as function with no args
+        # No parentheses - treat as function with no args
         return PipelineStep(function=step_str, args=[], kwargs={})
 
     func_name = match.group(1)
@@ -2061,7 +2064,7 @@ class PipelineExecutor:
 
 ```python
 """
-pride() — Multi-agent deliberation.
+pride() - Multi-agent deliberation.
 
 The heart of Lion. Spawns multiple agents that:
 1. Propose approaches independently (parallel)
@@ -2160,7 +2163,7 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager):
     max_rounds = config.get("general", {}).get("max_deliberation_rounds", 2)
     # For MVP, we do 1 round of propose + critique, then converge
 
-    # PHASE 3: CONVERGE (single agent — use the strongest/first)
+    # PHASE 3: CONVERGE (single agent - use the strongest/first)
     Display.phase("converge", "Synthesizing into final plan...")
     plan = _converge(agents[0], prompt, memory, cwd)
 
@@ -2547,7 +2550,7 @@ If Lion can meaningfully review and improve itself, the concept is proven.
 ## Appendix A: Quick Reference Card
 
 ```
-🦁 LION — Quick Reference
+🦁 LION - Quick Reference
 
 BASIC USAGE:
   lion "prompt"                           Auto-detect complexity
@@ -2591,9 +2594,9 @@ RUNS:   ~/.lion/runs/
 
 ## Appendix B: Why "Lion"?
 
-- A **pride** of lions is the only social cat group — they hunt together
-- The **lion** is the king — one goal, the pride executes
-- Lions use **coordinated strategy** — not brute force
+- A **pride** of lions is the only social cat group - they hunt together
+- The **lion** is the king - one goal, the pride executes
+- Lions use **coordinated strategy** - not brute force
 - "LION" = **L**anguage for **I**ntelligent **O**rchestration **N**etworks
 
 ---
