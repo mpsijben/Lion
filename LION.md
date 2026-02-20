@@ -378,6 +378,36 @@ lion function gdpr "Review for GDPR compliance, check data storage, consent, rig
 lion "Build user registration" -> pride(3) -> gdpr() -> review()
 ```
 
+### Feedback Operator (`<->` and `<N->`)
+
+The `<->` operator creates a feedback loop in the pipeline. When a feedback step (like `review()` or `devil()`) finds issues, the pipeline automatically re-runs the last producer step (like `pride()`) with the feedback as extra context.
+
+```
+# <-> re-runs with the original agent count
+lion "Build auth" -> pride(5) <-> review() -> test()
+  - pride(5) generates code
+  - review() finds 2 critical issues
+  - pride(5) re-runs with review feedback + deliberation context
+  - test() runs on the improved code
+
+# <N-> re-runs with N agents (cost control)
+lion "Build auth" -> pride(5) <1-> review() -> test()
+  - pride(5) generates code
+  - review() finds issues
+  - pride(1) re-runs with 1 agent (cheaper, still has full context)
+
+# Multiple feedback loops
+lion "Build auth" -> pride(5) <1-> review() <-> devil() -> test() -> pr()
+  - review feedback: re-run with 1 agent
+  - devil feedback: re-run with 5 agents (original count)
+```
+
+**Rules:**
+- `<->` sends feedback to the last "producer" step (the last step that generated code, typically `pride` or `test`)
+- If the feedback step finds no issues, the re-run is skipped and the pipeline continues normally
+- The re-run receives the original prompt, the previous deliberation summary, and the feedback content
+- `<N->` overrides the agent count for the re-run (e.g., `<1->` for a cheap single-agent fix)
+
 ### Smart Defaults (Complexity Detection)
 
 When no pipeline is specified, Lion uses heuristics (zero tokens):

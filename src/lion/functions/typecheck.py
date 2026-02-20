@@ -177,9 +177,10 @@ def execute_typecheck(prompt, previous, step, memory, config, cwd, cost_manager=
 
         # Try to auto-fix with AI
         if attempt < max_retries:
-            Display.notify("Attempting auto-fix with Claude...")
+            default_provider = config.get("providers", {}).get("default", "claude")
+            Display.notify(f"Attempting auto-fix with {default_provider}...")
 
-            provider = get_provider("claude", config)
+            provider = get_provider(default_provider, config)
 
             # Format errors for prompt
             error_text = "\n".join([

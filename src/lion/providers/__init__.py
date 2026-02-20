@@ -2,10 +2,12 @@
 
 from .claude import ClaudeProvider
 from .gemini import GeminiProvider
+from .codex import CodexProvider
 
 PROVIDERS = {
     "claude": ClaudeProvider,
     "gemini": GeminiProvider,
+    "codex": CodexProvider,
 }
 
 

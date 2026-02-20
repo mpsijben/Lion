@@ -7,6 +7,7 @@ from .pr import execute_pr
 from .create_tests import execute_create_tests
 from .lint import execute_lint
 from .typecheck import execute_typecheck
+from .future import execute_future
 
 FUNCTIONS = {
     "pride": execute_pride,
@@ -14,6 +15,8 @@ FUNCTIONS = {
     "test": execute_test,
     "pr": execute_pr,
     "create_tests": execute_create_tests,
+    "create_test": execute_create_tests,
     "lint": execute_lint,
     "typecheck": execute_typecheck,
+    "future": execute_future,
 }

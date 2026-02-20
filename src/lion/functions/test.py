@@ -168,12 +168,13 @@ def execute_test(prompt, previous, step, memory, config, cwd, cost_manager=None)
 
         # Auto-fix with claude -p
         if attempt < max_retries:
-            Display.notify("Attempting auto-fix with Claude...")
+            default_provider = config.get("providers", {}).get("default", "claude")
+            Display.notify(f"Attempting auto-fix with {default_provider}...")
 
             # Extract failure details
             failures = _extract_failures(output, framework)
 
-            provider = get_provider("claude", config)
+            provider = get_provider(default_provider, config)
 
             fix_prompt = FIX_PROMPT.format(
                 command=" ".join(command),

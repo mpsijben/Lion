@@ -133,8 +133,9 @@ def execute_pr(prompt, previous, step, memory, config, cwd, cost_manager=None):
     # Stage all changes
     _stage_all(cwd)
 
-    # Generate commit message using Claude
-    provider = get_provider("claude", config)
+    # Generate commit message
+    default_provider = config.get("providers", {}).get("default", "claude")
+    provider = get_provider(default_provider, config)
     total_tokens = 0
 
     decision = previous.get("final_decision", "") or previous.get("plan", "")[:500]

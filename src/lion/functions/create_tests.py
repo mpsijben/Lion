@@ -1,11 +1,15 @@
-"""create_tests() - Force test generation.
+"""create_tests() - Test generation with optional multi-agent deliberation.
 
-Analyzes code and generates comprehensive tests even when no tests exist.
-Uses AI to understand the code structure and create appropriate test cases.
+Analyzes code and generates comprehensive tests.
+Supports pride-style multi-agent mode:
+  create_tests()              -- 1 agent (default provider)
+  create_tests(3)             -- 3 agents discuss test strategy, then implement
+  create_tests(gemini, claude) -- specific agents discuss, then implement
 """
 
 import os
 import time
+import concurrent.futures
 from typing import Optional
 
 from ..memory import MemoryEntry
@@ -58,6 +62,90 @@ Focus on:
 Generate comprehensive, runnable tests.
 """
 
+PROPOSE_TESTS_PROMPT = """You are Agent {agent_num} in a team of {total_agents} test engineers.
+
+Analyze the code below and propose a TEST STRATEGY. Do NOT write the actual test code yet.
+
+PROJECT LANGUAGE: {language}
+TEST FRAMEWORK: {framework}
+
+SOURCE FILES:
+{source_files}
+
+EXISTING TESTS (for reference):
+{existing_tests}
+
+ORIGINAL TASK: {context}
+
+Propose:
+1. Which files/functions need tests most urgently
+2. Test categories (unit, integration, edge cases, error handling)
+3. Specific test cases you would write (name + what it verifies)
+4. Any test utilities or fixtures needed
+5. Potential tricky edge cases others might miss
+
+Be specific and actionable."""
+
+CRITIQUE_TESTS_PROMPT = """You are Agent {agent_num} reviewing test strategies from your team.
+
+PROJECT LANGUAGE: {language}
+TEST FRAMEWORK: {framework}
+
+YOUR STRATEGY:
+{own_proposal}
+
+OTHER STRATEGIES:
+{other_proposals}
+
+For each other strategy:
+1. What test cases did they think of that you missed?
+2. What concerns do you have about their approach?
+3. What would you change or add?
+4. Your updated recommendation for the final test plan."""
+
+CONVERGE_TESTS_PROMPT = """You are the lead test engineer. Your team proposed and reviewed test strategies.
+
+PROJECT LANGUAGE: {language}
+TEST FRAMEWORK: {framework}
+
+ALL STRATEGIES AND REVIEWS:
+{deliberation}
+
+Create the FINAL TEST PLAN combining the best ideas from all agents.
+
+Format:
+DECISION: [summary of test approach]
+
+TEST FILES TO CREATE:
+1. [filename] - [what it tests] - [key test cases]
+2. ...
+
+IMPORTANT CONSIDERATIONS:
+- [anything from critiques that must be addressed]
+"""
+
+IMPLEMENT_TESTS_PROMPT = """Implement these tests based on the agreed plan.
+
+PROJECT LANGUAGE: {language}
+TEST FRAMEWORK: {framework}
+
+TEST PLAN:
+{plan}
+
+SOURCE FILES:
+{source_files}
+
+EXISTING TESTS (for reference/style):
+{existing_tests}
+
+Write all the test code now. For each test file, output:
+```{language}
+# FILE: <test_file_path>
+<test code>
+```
+
+Be thorough and implement ALL tests from the plan."""
+
 COVERAGE_ANALYSIS_PROMPT = """Analyze the following source code and identify what needs to be tested.
 
 SOURCE CODE:
@@ -73,28 +161,60 @@ Be specific about what each test should verify.
 """
 
 
+def _resolve_agents(step, config):
+    """Determine which providers to use, same pattern as pride().
+
+    Returns list of provider instances.
+    - No args: 1 agent with default provider
+    - Number arg: N agents with default provider
+    - String args (provider names): specific providers
+    - Non-agent string args (changed, all, file paths): ignored here
+    """
+    default_provider = config.get("providers", {}).get("default", "claude")
+    known_providers = {"claude", "gemini", "codex"}
+
+    if not step.args:
+        return [get_provider(default_provider, config)]
+
+    # Collect only agent-related args
+    agent_args = []
+    for arg in step.args:
+        s = str(arg)
+        if s.isdigit():
+            n = int(s)
+            n = max(1, min(n, 5))
+            return [get_provider(default_provider, config) for _ in range(n)]
+        if s in known_providers:
+            agent_args.append(s)
+
+    if agent_args:
+        return [get_provider(name, config) for name in agent_args]
+
+    return [get_provider(default_provider, config)]
+
+
 def execute_create_tests(prompt, previous, step, memory, config, cwd, cost_manager=None):
     """Execute test generation for the project.
 
-    Args:
-        prompt: The original user prompt
-        previous: Dict with output from previous steps
-        step: The PipelineStep with function name and args
-        memory: SharedMemory instance for logging
-        config: Lion configuration dict
-        cwd: Working directory
-        cost_manager: Optional cost tracking manager
-
-    Returns:
-        dict with success, tests_created, files, tokens_used, etc.
+    Supports multi-agent mode:
+      create_tests()              -- 1 agent, default provider
+      create_tests(3)             -- 3 agents deliberate on test strategy
+      create_tests(gemini, claude) -- specific agents deliberate
     """
     Display.phase("create_tests", "Analyzing code and generating tests...")
 
-    # Parse arguments
-    coverage_target = "all"  # all, changed, or specific file
+    # Separate coverage args from agent args
+    coverage_target = "all"
     if step.args:
-        if len(step.args) > 0:
-            coverage_target = str(step.args[0])
+        for arg in step.args:
+            s = str(arg)
+            if s in ("changed", "all") or "/" in s or "." in s:
+                coverage_target = s
+
+    # Resolve agents
+    agents = _resolve_agents(step, config)
+    n_agents = len(agents)
+    multi_agent = n_agents > 1
 
     # Detect language and framework
     language = detect_project_language(cwd)
@@ -109,24 +229,20 @@ def execute_create_tests(prompt, previous, step, memory, config, cwd, cost_manag
             "tokens_used": 0,
         }
 
-    # If no framework detected, suggest one based on language
     if not framework:
         framework = _suggest_framework(language)
         Display.notify(f"No test framework detected, suggesting: {framework}")
     else:
         Display.notify(f"Detected: {language} with {framework}")
 
-    # Get source files to test
+    # Get source files
     if coverage_target == "changed":
-        # Only test files that were changed in this pipeline
         source_files = previous.get("files_changed", [])
         source_files = [f for f in source_files if not _is_test_file(f, framework)]
     elif coverage_target != "all":
-        # Specific file or pattern
         source_files = [f for f in get_source_files(cwd, language) if coverage_target in f]
     else:
         source_files = get_source_files(cwd, language)
-        # Exclude test files
         source_files = [f for f in source_files if not _is_test_file(f, framework)]
 
     if not source_files:
@@ -145,7 +261,6 @@ def execute_create_tests(prompt, previous, step, memory, config, cwd, cost_manag
     existing_tests = get_test_files(cwd, framework)
     existing_test_content = ""
     if existing_tests:
-        # Read first few test files for style reference
         for test_file in existing_tests[:3]:
             test_path = os.path.join(cwd, test_file)
             content = read_file_content(test_path, max_size=5000)
@@ -153,39 +268,53 @@ def execute_create_tests(prompt, previous, step, memory, config, cwd, cost_manag
 
     # Read source files
     source_content = ""
-    for src_file in source_files[:20]:  # Limit to 20 files to avoid context overflow
+    for src_file in source_files[:20]:
         src_path = os.path.join(cwd, src_file)
         content = read_file_content(src_path, max_size=10000)
         source_content += f"\n--- {src_file} ---\n{content}\n"
 
-    # Build context from previous steps
     context = prompt
     if previous.get("plan"):
         context += f"\n\nImplementation plan:\n{previous['plan'][:2000]}"
 
-    # Generate tests using AI
-    provider = get_provider("claude", config)
+    if multi_agent:
+        return _multi_agent_create_tests(
+            agents, prompt, context, language, framework,
+            source_content, existing_test_content, source_files,
+            previous, memory, config, cwd, cost_manager,
+        )
+    else:
+        return _single_agent_create_tests(
+            agents[0], prompt, context, language, framework,
+            source_content, existing_test_content, source_files,
+            previous, memory, cwd, cost_manager,
+        )
 
+
+def _single_agent_create_tests(
+    provider, prompt, context, language, framework,
+    source_content, existing_test_content, source_files,
+    previous, memory, cwd, cost_manager,
+):
+    """Single agent test generation."""
     test_prompt = CREATE_TESTS_PROMPT.format(
         language=language,
         framework=framework,
         source_files=source_content,
-        existing_tests=existing_test_content if existing_test_content else "No existing tests found.",
+        existing_tests=existing_test_content or "No existing tests found.",
         context=context,
     )
 
-    Display.notify("Generating tests with AI...")
+    Display.notify(f"Generating tests with {provider.name}...")
     start = time.time()
     result = provider.implement(test_prompt, cwd)
     duration = time.time() - start
 
     total_tokens = result.tokens_used
 
-    # Track cost
     if cost_manager and result.tokens_used:
-        cost_manager.add_cost("claude", result.tokens_used)
+        cost_manager.add_cost(provider.name, result.tokens_used)
 
-    # Log to memory
     memory.write(MemoryEntry(
         timestamp=time.time(),
         phase="create_tests",
@@ -198,6 +327,7 @@ def execute_create_tests(prompt, previous, step, memory, config, cwd, cost_manag
             "source_files_count": len(source_files),
             "duration": duration,
             "success": result.success,
+            "model": result.model,
         },
     ))
 
@@ -210,12 +340,209 @@ def execute_create_tests(prompt, previous, step, memory, config, cwd, cost_manag
             "tokens_used": total_tokens,
         }
 
-    # Parse generated test files from output
-    tests_created = _parse_test_files(result.content, language)
+    return _write_tests(result.content, language, cwd, previous, total_tokens, duration)
 
+
+def _multi_agent_create_tests(
+    agents, prompt, context, language, framework,
+    source_content, existing_test_content, source_files,
+    previous, memory, config, cwd, cost_manager,
+):
+    """Multi-agent test generation: propose -> critique -> converge -> implement."""
+    n_agents = len(agents)
+    agent_summaries = []
+    total_tokens = 0
+
+    Display.pride_start(n_agents, [a.name for a in agents])
+
+    # PHASE 1: PROPOSE test strategies (parallel)
+    Display.phase("propose", "Each agent proposes test strategy...")
+    proposals = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_agents) as executor:
+        futures = {}
+        for i, agent in enumerate(agents):
+            p = PROPOSE_TESTS_PROMPT.format(
+                agent_num=i + 1,
+                total_agents=n_agents,
+                language=language,
+                framework=framework,
+                source_files=source_content,
+                existing_tests=existing_test_content or "No existing tests.",
+                context=context,
+            )
+            futures[executor.submit(agent.ask, p, "", cwd)] = i
+
+        for future in concurrent.futures.as_completed(futures):
+            i = futures[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                Display.step_error(f"Agent {i + 1} propose", str(e))
+                continue
+
+            if not result.success:
+                Display.step_error(f"Agent {i + 1} propose", result.error or "Unknown error")
+                continue
+
+            total_tokens += result.tokens_used
+            proposals.append({
+                "agent": f"agent_{i + 1}",
+                "content": result.content,
+                "model": result.model,
+            })
+
+            memory.write(MemoryEntry(
+                timestamp=time.time(),
+                phase="propose",
+                agent=f"agent_{i + 1}",
+                type="test_strategy",
+                content=result.content,
+                metadata={"model": result.model},
+            ))
+
+            summary = result.content.strip().split("\n")[0][:100]
+            agent_summaries.append({
+                "agent": f"agent_{i + 1}",
+                "model": result.model,
+                "summary": summary,
+            })
+            Display.agent_proposal(i + 1, result.model, result.content[:150])
+
+    if not proposals:
+        return {
+            "success": False,
+            "error": "All agents failed to propose test strategies",
+            "tokens_used": total_tokens,
+            "files_changed": previous.get("files_changed", []),
+        }
+
+    # PHASE 2: CRITIQUE (parallel, skip if only 1 agent)
+    if n_agents > 1:
+        Display.phase("critique", "Agents review each other's test strategies...")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_agents) as executor:
+            futures = {}
+            for i, agent in enumerate(agents):
+                own = next((p for p in proposals if p["agent"] == f"agent_{i + 1}"), None)
+                own_content = own["content"] if own else "(no proposal)"
+
+                other_proposals = "\n\n".join(
+                    f"Agent {j + 1} ({p['model']}): {p['content']}"
+                    for j, p in enumerate(proposals)
+                    if p["agent"] != f"agent_{i + 1}"
+                )
+
+                p = CRITIQUE_TESTS_PROMPT.format(
+                    agent_num=i + 1,
+                    language=language,
+                    framework=framework,
+                    own_proposal=own_content,
+                    other_proposals=other_proposals,
+                )
+                futures[executor.submit(agent.ask, p, "", cwd)] = i
+
+            for future in concurrent.futures.as_completed(futures):
+                i = futures[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    Display.step_error(f"Agent {i + 1} critique", str(e))
+                    continue
+
+                if not result.success:
+                    continue
+
+                total_tokens += result.tokens_used
+                memory.write(MemoryEntry(
+                    timestamp=time.time(),
+                    phase="critique",
+                    agent=f"agent_{i + 1}",
+                    type="test_critique",
+                    content=result.content,
+                    metadata={"model": result.model},
+                ))
+                Display.agent_critique(i + 1, result.content[:150])
+
+    # PHASE 3: CONVERGE on test plan
+    Display.phase("converge", "Synthesizing final test plan...")
+    all_entries = memory.read_all()
+    deliberation = memory.format_for_prompt(all_entries)
+    if len(deliberation) > 80000:
+        deliberation = deliberation[:80000] + "\n\n... (truncated)"
+
+    converge_prompt = CONVERGE_TESTS_PROMPT.format(
+        language=language,
+        framework=framework,
+        deliberation=deliberation,
+    )
+
+    lead = agents[0]
+    converge_result = lead.ask(converge_prompt, "", cwd)
+    total_tokens += converge_result.tokens_used
+
+    if not converge_result.success or not converge_result.content.strip():
+        plan = proposals[0]["content"] if proposals else "Write comprehensive tests."
+        Display.step_error("converge", "Using first agent's strategy as fallback")
+    else:
+        plan = converge_result.content
+
+    memory.write(MemoryEntry(
+        timestamp=time.time(),
+        phase="converge",
+        agent="synthesizer",
+        type="test_plan",
+        content=plan,
+        metadata={"model": converge_result.model},
+    ))
+    Display.convergence(plan[:300])
+
+    # PHASE 4: IMPLEMENT tests
+    Display.phase("implement", "Writing test code...")
+    impl_prompt = IMPLEMENT_TESTS_PROMPT.format(
+        language=language,
+        framework=framework,
+        plan=plan,
+        source_files=source_content,
+        existing_tests=existing_test_content or "No existing tests.",
+    )
+
+    impl_result = lead.implement(impl_prompt, cwd)
+    total_tokens += impl_result.tokens_used
+
+    if cost_manager and total_tokens:
+        cost_manager.add_cost(lead.name, total_tokens)
+
+    memory.write(MemoryEntry(
+        timestamp=time.time(),
+        phase="implement",
+        agent="test_implementer",
+        type="test_code",
+        content=impl_result.content[:5000] if impl_result.content else "",
+        metadata={"model": impl_result.model},
+    ))
+
+    if not impl_result.success:
+        Display.step_error("create_tests", f"Test implementation failed: {impl_result.error}")
+        return {
+            "success": False,
+            "error": impl_result.error,
+            "files_changed": previous.get("files_changed", []),
+            "tokens_used": total_tokens,
+            "agent_summaries": agent_summaries,
+        }
+
+    result = _write_tests(impl_result.content, language, cwd, previous, total_tokens, 0)
+    result["agent_summaries"] = agent_summaries
+    result["final_decision"] = plan.split("\n")[0][:150] if plan else ""
+    return result
+
+
+def _write_tests(content, language, cwd, previous, total_tokens, duration):
+    """Parse AI output and write test files to disk."""
+    tests_created = _parse_test_files(content, language)
     Display.notify(f"Generated {len(tests_created)} test file(s)")
 
-    # Write test files
     files_written = []
     for test_file, test_content in tests_created.items():
         test_path = os.path.join(cwd, test_file)
@@ -228,14 +555,12 @@ def execute_create_tests(prompt, previous, step, memory, config, cwd, cost_manag
         except Exception as e:
             Display.step_error("create_tests", f"Failed to write {test_file}: {e}")
 
-    # Combine with previous files changed
     all_files_changed = list(set(previous.get("files_changed", []) + files_written))
 
     return {
         "success": True,
         "tests_created": len(files_written),
         "test_files": files_written,
-        "framework": framework,
         "language": language,
         "tokens_used": total_tokens,
         "files_changed": all_files_changed,

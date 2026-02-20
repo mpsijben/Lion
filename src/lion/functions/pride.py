@@ -140,6 +140,8 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
 
 def _resolve_agents(step, config):
     """Determine which providers to use for the pride."""
+    default_provider = config.get("providers", {}).get("default", "claude")
+
     if step.args:
         first_arg = step.args[0]
         # Explicit providers: pride(claude, gemini)
@@ -148,9 +150,9 @@ def _resolve_agents(step, config):
         # Number of agents: pride(3)
         n = int(first_arg)
         n = max(1, min(n, 5))  # Clamp between 1 and 5
-        return [get_provider("claude", config) for _ in range(n)]
-    # Default: 3 claude agents
-    return [get_provider("claude", config) for _ in range(3)]
+        return [get_provider(default_provider, config) for _ in range(n)]
+    # Default: 3 agents with default provider
+    return [get_provider(default_provider, config) for _ in range(3)]
 
 
 def _parallel_propose(agents, prompt, cwd, memory):
