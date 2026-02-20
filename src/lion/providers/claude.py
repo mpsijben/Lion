@@ -32,10 +32,16 @@ class ClaudeProvider(Provider):
             return AgentResult(
                 content="", model="claude", tokens_used=0,
                 duration_seconds=duration, success=False,
-                error=result.stderr
+                error=result.stderr or f"Exit code {result.returncode}"
             )
 
-        return self._parse_output(result.stdout, duration)
+        parsed = self._parse_output(result.stdout, duration)
+
+        # Flag empty responses as potential issues
+        if parsed.success and not parsed.content.strip():
+            parsed.error = "claude -p returned empty response"
+
+        return parsed
 
     def ask_with_files(self, prompt, files, system_prompt="", cwd="."):
         """Include file contents in the prompt."""

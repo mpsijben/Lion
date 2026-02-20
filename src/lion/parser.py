@@ -27,17 +27,14 @@ def parse_lion_input(raw: str, config: dict = None) -> tuple[str, list[PipelineS
     """Parse raw lion input into prompt and pipeline steps."""
     config = config or {}
 
-    # Split on " -> " to separate prompt from pipeline
-    parts = re.split(r"\s*->\s*", raw, maxsplit=1)
+    # Extract the quoted prompt first, then treat the rest as pipeline.
+    # This prevents -> inside the prompt text from being parsed as pipeline separators.
+    prompt, pipeline_str = _split_prompt_and_pipeline(raw)
 
-    prompt = parts[0].strip().strip('"').strip("'")
-
-    if len(parts) < 2:
+    if not pipeline_str:
         return prompt, []
 
-    pipeline_str = parts[1]
-
-    # Split remaining on " -> "
+    # Split pipeline on " -> "
     step_strings = re.split(r"\s*->\s*", pipeline_str)
 
     steps = []
@@ -51,6 +48,42 @@ def parse_lion_input(raw: str, config: dict = None) -> tuple[str, list[PipelineS
             steps.append(step)
 
     return prompt, steps
+
+
+def _split_prompt_and_pipeline(raw: str) -> tuple[str, str]:
+    """Split raw input into prompt and pipeline string, respecting quotes.
+
+    The prompt is either:
+    - A quoted string ("..." or '...') followed by optional -> pipeline
+    - Everything before the first -> that looks like a pipeline step (word with optional parens)
+    """
+    raw = raw.strip()
+
+    # Case 1: Prompt starts with a quote character
+    if raw and raw[0] in ('"', "'"):
+        quote_char = raw[0]
+        # Find the matching closing quote
+        end = raw.find(quote_char, 1)
+        if end != -1:
+            prompt = raw[1:end]
+            rest = raw[end + 1:].strip()
+            # Strip leading -> from the pipeline part
+            if rest.startswith("->"):
+                return prompt, rest[2:].strip()
+            return prompt, ""
+
+    # Case 2: No quotes -- find the first -> followed by a valid function name
+    # Valid function looks like: word or word() or word(args)
+    for match in re.finditer(r"\s*->\s*", raw):
+        rest_after = raw[match.end():].strip()
+        # Check if what follows looks like a pipeline step (starts with a word char)
+        if re.match(r"[a-zA-Z_]\w*", rest_after):
+            prompt = raw[:match.start()].strip().strip('"').strip("'")
+            return prompt, rest_after
+
+    # No pipeline found
+    prompt = raw.strip().strip('"').strip("'")
+    return prompt, ""
 
 
 def _parse_step(step_str: str, config: dict) -> PipelineStep:

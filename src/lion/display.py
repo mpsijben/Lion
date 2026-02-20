@@ -49,10 +49,13 @@ class Display:
     @staticmethod
     def phase(name, description):
         icons = {
-            "propose": "\U0001f4ad",
-            "critique": "\U0001f50d",
-            "converge": "\U0001f3af",
-            "implement": "\U0001f528",
+            "propose": "\U0001f4ad",    # speech balloon
+            "critique": "\U0001f50d",   # magnifying glass
+            "converge": "\U0001f3af",   # target
+            "implement": "\U0001f528",  # hammer
+            "review": "\U0001f4dd",     # memo
+            "test": "\U0001f9ea",       # test tube
+            "pr": "\U0001f680",         # rocket
         }
         icon = icons.get(name, ">")
         _print(f"\n   {icon} {BOLD}{name.upper()}{RESET}: {description}")
@@ -99,7 +102,7 @@ class Display:
             _print(f"   {line}")
 
     @staticmethod
-    def final_result(result):
+    def final_result(result, run_dir=None):
         _print(f"\n{'=' * 50}")
         if result.success:
             _print(f"{LION} {GREEN}Done!{RESET}")
@@ -108,12 +111,40 @@ class Display:
 
         _print(f"   Steps: {result.steps_completed}/{result.total_steps}")
         _print(f"   Duration: {result.total_duration:.1f}s")
+
+        # Show agent summaries from pride
+        if result.agent_summaries:
+            _print(f"\n   {BOLD}Agents:{RESET}")
+            for a in result.agent_summaries:
+                name = a.get("agent", "?").replace("agent_", "Agent ")
+                summary = a.get("summary", "")
+                _print(f"   - {name}: {DIM}{summary}{RESET}")
+
+        # Show the decision
+        if result.final_decision:
+            _print(f"\n   {BOLD}Decision:{RESET} {result.final_decision}")
+
         if result.files_changed:
-            _print(f"   Files changed: {', '.join(result.files_changed)}")
+            _print(f"\n   {BOLD}Files changed:{RESET}")
+            for f in result.files_changed:
+                _print(f"   - {f}")
+
         if result.errors:
-            _print(f"   {RED}Errors:{RESET}")
+            _print(f"\n   {RED}Errors:{RESET}")
             for e in result.errors:
                 _print(f"     - {e}")
+
+        # Show run directory for full details
+        if run_dir:
+            import os
+            # Show relative path if inside cwd
+            cwd = os.getcwd()
+            if run_dir.startswith(cwd):
+                rel = os.path.relpath(run_dir, cwd)
+            else:
+                rel = run_dir
+            _print(f"\n   {DIM}Full log: {rel}/memory.jsonl{RESET}")
+
         _print("")
 
     @staticmethod
@@ -123,6 +154,11 @@ class Display:
     @staticmethod
     def error(message):
         _print(f"\n{LION} {RED}Error:{RESET} {message}")
+
+    @staticmethod
+    def notify(message):
+        """Display a notification message."""
+        _print(f"   {DIM}{message}{RESET}")
 
     @staticmethod
     def format_completion_summary(agent_summaries, final_decision, success=True, content=None):

@@ -61,13 +61,13 @@ def main():
         print('  lion "Build a feature" -> pride(3)')
         print()
         print("Pipeline functions:")
-        print("  pride(n)     Multi-agent deliberation")
-        print("  review()     Code review")
-        print("  test()       Run tests with auto-fix")
-        print("  devil()      Devil's advocate challenge")
-        print("  future(Nm)   Time-travel review")
-        print("  audit()      Security audit")
-        print("  pr(branch)   Create git PR")
+        print("  pride         Multi-agent deliberation (default: 3 agents)")
+        print("  pride(n)      Multi-agent deliberation with n agents")
+        print("  review        Code review")
+        print("  test          Run tests with auto-fix")
+        print("  test(nofix)   Run tests without auto-fix")
+        print("  pr            Create git PR (auto-generates branch)")
+        print("  pr(branch)    Create git PR with specific branch")
         sys.exit(0)
 
     # Join all arguments (handles shell quoting)
@@ -109,13 +109,12 @@ def main():
     try:
         result = executor.run()
 
-        # Show result in terminal (single agent content or pride decision)
+        # Show result in terminal
         if result.content:
+            # Single agent - show the response
             Display.agent_result(result.content)
-        elif result.final_decision:
-            Display.agent_result(result.final_decision)
 
-        Display.final_result(result)
+        Display.final_result(result, run_dir)
 
         # LION_SUMMARY on stdout only when called from hook
         if from_hook:

@@ -262,24 +262,49 @@ def _converge(lead_agent, prompt, memory, cwd):
     all_entries = memory.read_all()
     deliberation_text = memory.format_for_prompt(all_entries)
 
+    # Truncate deliberation if too large (claude -p context limits)
+    max_chars = 80000
+    if len(deliberation_text) > max_chars:
+        deliberation_text = deliberation_text[:max_chars] + "\n\n... (truncated for length)"
+
     converge_prompt = CONVERGE_PROMPT.format(
         prompt=prompt,
         deliberation=deliberation_text,
     )
 
-    result = lead_agent.ask(converge_prompt, "", cwd)
+    # Retry up to 2 times if converge returns empty
+    result = None
+    for attempt in range(3):
+        result = lead_agent.ask(converge_prompt, "", cwd)
+
+        if result.success and result.content and result.content.strip():
+            break
+
+        if attempt < 2:
+            Display.step_error("converge", f"Empty response (attempt {attempt + 1}/3), retrying...")
+
+    if not result or not result.content or not result.content.strip():
+        # Fallback: use proposals as plan
+        proposals = [e for e in all_entries if e.phase == "propose"]
+        fallback = "DECISION: Using first agent's proposal as plan (converge failed).\n\nTASKS:\n"
+        if proposals:
+            fallback += proposals[0].content
+        Display.step_error("converge", "All attempts returned empty, using fallback plan")
+        content = fallback
+    else:
+        content = result.content
 
     memory.write(MemoryEntry(
         timestamp=time.time(),
         phase="converge",
         agent="synthesizer",
         type="decision",
-        content=result.content,
-        metadata={"model": result.model},
+        content=content,
+        metadata={"model": result.model if result else "unknown"},
     ))
 
-    Display.convergence(result.content[:300])
-    return result.content
+    Display.convergence(content[:300])
+    return content
 
 
 def _implement(lead_agent, prompt, plan, cwd, memory):
@@ -291,17 +316,20 @@ def _implement(lead_agent, prompt, plan, cwd, memory):
 
     result = lead_agent.implement(impl_prompt, cwd)
 
+    if not result.success:
+        Display.step_error("implement", result.error or "Implementation failed")
+
     memory.write(MemoryEntry(
         timestamp=time.time(),
         phase="implement",
         agent="implementer",
         type="code",
-        content=result.content,
+        content=result.content or "",
         metadata={"model": result.model},
     ))
 
     return {
-        "code": result.content,
+        "code": result.content or "",
         "files_changed": [],
         "tokens": result.tokens_used,
     }
