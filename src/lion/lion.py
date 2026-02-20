@@ -3,6 +3,7 @@
 import sys
 import os
 import time
+import json
 
 from .parser import parse_lion_input
 from .pipeline import PipelineExecutor
@@ -78,23 +79,8 @@ def main():
     # Parse input into prompt + pipeline
     prompt, pipeline_steps = parse_lion_input(raw_input, config)
 
-    # If no pipeline specified, detect complexity and use defaults
-    if not pipeline_steps:
-        complexity = detect_complexity(prompt, config)
-        default_pipelines = {
-            "high": "pride(3)",
-            "medium": "pride(2)",
-            "low": "",
-        }
-        default_pipeline = config.get("complexity", {}).get(
-            f"{complexity}_pipeline",
-            default_pipelines.get(complexity, ""),
-        )
-        if default_pipeline:
-            _, pipeline_steps = parse_lion_input(
-                f'"{prompt}" -> {default_pipeline}', config
-            )
-            Display.auto_pipeline(complexity, default_pipeline)
+    # No pipeline specified = single agent, no pride
+    # User must explicitly request pride() in the pipeline
 
     # Get working directory
     cwd = os.environ.get("LION_CWD", os.getcwd())
@@ -117,11 +103,44 @@ def main():
         cwd=cwd,
     )
 
+    # Running from hook? (hook sets LION_SESSION_ID)
+    from_hook = "LION_SESSION_ID" in os.environ
+
     try:
         result = executor.run()
+
+        # Show result in terminal (single agent content or pride decision)
+        if result.content:
+            Display.agent_result(result.content)
+        elif result.final_decision:
+            Display.agent_result(result.final_decision)
+
         Display.final_result(result)
+
+        # LION_SUMMARY on stdout only when called from hook
+        if from_hook:
+            summary = Display.format_completion_summary(
+                result.agent_summaries,
+                result.final_decision,
+                result.success,
+                result.content,
+            )
+            summary_json = {
+                "success": result.success,
+                "summary": summary,
+                "agent_summaries": result.agent_summaries,
+                "final_decision": result.final_decision,
+                "files_changed": result.files_changed,
+                "duration": result.total_duration,
+            }
+            print(f"LION_SUMMARY:{json.dumps(summary_json)}")
+
     except KeyboardInterrupt:
         Display.cancelled()
+        if from_hook:
+            print(f"LION_SUMMARY:{json.dumps({'success': False, 'summary': 'Lion geannuleerd door gebruiker'})}")
     except Exception as e:
         Display.error(str(e))
+        if from_hook:
+            print(f"LION_SUMMARY:{json.dumps({'success': False, 'summary': f'Lion fout: {str(e)}'})}")
         raise

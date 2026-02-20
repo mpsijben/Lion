@@ -86,6 +86,19 @@ class Display:
         _print(f"   {RED}x{RESET} {func_name} failed: {error}")
 
     @staticmethod
+    def agent_result(content):
+        """Show the agent's response content."""
+        if not content:
+            return
+        _print(f"\n   {BOLD}Result:{RESET}")
+        # Show first 500 chars, trim long responses
+        text = content.strip()
+        if len(text) > 500:
+            text = text[:500] + f"\n   {DIM}... (truncated){RESET}"
+        for line in text.split("\n"):
+            _print(f"   {line}")
+
+    @staticmethod
     def final_result(result):
         _print(f"\n{'=' * 50}")
         if result.success:
@@ -110,3 +123,31 @@ class Display:
     @staticmethod
     def error(message):
         _print(f"\n{LION} {RED}Error:{RESET} {message}")
+
+    @staticmethod
+    def format_completion_summary(agent_summaries, final_decision, success=True, content=None):
+        """Format a completion summary for the hook to return."""
+        lines = []
+
+        if success:
+            lines.append("Lion voltooid!")
+        else:
+            lines.append("Lion voltooid met fouten")
+
+        # Add agent summaries
+        if agent_summaries:
+            for agent_info in agent_summaries:
+                agent_num = agent_info.get("agent", "agent_1").replace("agent_", "Agent ")
+                summary = agent_info.get("summary", "Completed")
+                lines.append(f"  - {agent_num}: {summary}")
+        elif content:
+            # Single agent - extract one-liner from content
+            one_liner = content.strip().split("\n")[0][:150]
+            lines.append(f"  - {one_liner}")
+        else:
+            lines.append("  - Taak uitgevoerd")
+
+        if final_decision:
+            lines.append(f"  > Beslissing: {final_decision}")
+
+        return "\n".join(lines)

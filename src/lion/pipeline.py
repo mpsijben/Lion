@@ -21,6 +21,13 @@ class PipelineResult:
     total_tokens: int
     files_changed: list[str]
     errors: list[str]
+    agent_summaries: list[dict] = None
+    final_decision: str = None
+    content: str = None
+
+    def __post_init__(self):
+        if self.agent_summaries is None:
+            self.agent_summaries = []
 
 
 class PipelineExecutor:
@@ -36,6 +43,8 @@ class PipelineExecutor:
         self.files_changed = []
         self.errors = []
         self.total_tokens = 0
+        self.agent_summaries = []
+        self.final_decision = None
 
     def _expand_patterns(self, steps):
         """Expand __pattern__ meta-steps into actual steps."""
@@ -56,6 +65,7 @@ class PipelineExecutor:
         # If no pipeline steps, just run a single agent
         if not self.steps:
             result = self._run_single_agent()
+            content = result.get("content", "")
             return PipelineResult(
                 success=result.get("success", False),
                 prompt=self.prompt,
@@ -66,6 +76,7 @@ class PipelineExecutor:
                 total_tokens=self.total_tokens,
                 files_changed=result.get("files_changed", []),
                 errors=[],
+                content=content,
             )
 
         # Execute pipeline steps sequentially
@@ -95,6 +106,12 @@ class PipelineExecutor:
                 self.total_tokens += step_result.get("tokens_used", 0)
                 self.files_changed.extend(step_result.get("files_changed", []))
 
+                # Collect summaries from pride steps
+                if step_result.get("agent_summaries"):
+                    self.agent_summaries = step_result["agent_summaries"]
+                if step_result.get("final_decision"):
+                    self.final_decision = step_result["final_decision"]
+
                 previous_output = {**previous_output, **step_result}
 
                 Display.step_complete(step.function, step_result)
@@ -114,6 +131,8 @@ class PipelineExecutor:
             total_tokens=self.total_tokens,
             files_changed=list(set(self.files_changed)),
             errors=self.errors,
+            agent_summaries=self.agent_summaries,
+            final_decision=self.final_decision,
         )
 
     def _run_single_agent(self) -> dict:

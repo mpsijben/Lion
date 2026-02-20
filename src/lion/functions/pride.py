@@ -81,6 +81,9 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
     agents = _resolve_agents(step, config)
     n_agents = len(agents)
 
+    # Track agent summaries for final output
+    agent_summaries = []
+
     Display.pride_start(n_agents, [a.name for a in agents])
 
     # PHASE 1: PROPOSE (parallel)
@@ -93,7 +96,18 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
             "error": "All agents failed to propose",
             "tokens_used": 0,
             "files_changed": [],
+            "agent_summaries": [],
+            "final_decision": None,
         }
+
+    # Extract 1-liner summaries from proposals
+    for proposal in proposals:
+        summary = _extract_one_liner(proposal["content"])
+        agent_summaries.append({
+            "agent": proposal["agent"],
+            "model": proposal["model"],
+            "summary": summary,
+        })
 
     # PHASE 2: CRITIQUE (parallel, skip if only 1 agent)
     if n_agents > 1:
@@ -103,6 +117,9 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
     # PHASE 3: CONVERGE (single agent)
     Display.phase("converge", "Synthesizing into final plan...")
     plan = _converge(agents[0], prompt, memory, cwd)
+
+    # Extract the decision from the converged plan
+    final_decision = _extract_decision_summary(plan)
 
     # PHASE 4: IMPLEMENT (single agent, writes files)
     Display.phase("implement", "Building the solution...")
@@ -116,6 +133,8 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
         "files_changed": implementation.get("files_changed", []),
         "tokens_used": 0,
         "deliberation_summary": memory.format_for_prompt(memory.read_all()),
+        "agent_summaries": agent_summaries,
+        "final_decision": final_decision,
     }
 
 
@@ -292,3 +311,38 @@ def _extract_decisions(memory):
     """Extract key decisions from the deliberation."""
     decisions = memory.get_decisions()
     return [d.content for d in decisions]
+
+
+def _extract_one_liner(content):
+    """Extract a concise 1-liner summary from proposal content."""
+    # Take first meaningful line or first sentence
+    lines = content.strip().split("\n")
+    for line in lines:
+        line = line.strip()
+        # Skip headers, bullet points starting with numbers
+        if line and not line.startswith("#") and len(line) > 10:
+            # Truncate to ~100 chars at word boundary
+            if len(line) > 100:
+                truncated = line[:100].rsplit(" ", 1)[0]
+                return truncated + "..."
+            return line
+    # Fallback: first 100 chars
+    return content[:100].replace("\n", " ") + "..."
+
+
+def _extract_decision_summary(plan):
+    """Extract the DECISION line from a converged plan."""
+    lines = plan.strip().split("\n")
+    for line in lines:
+        if line.strip().upper().startswith("DECISION:"):
+            # Return everything after "DECISION:"
+            decision = line.split(":", 1)[1].strip() if ":" in line else line
+            # Truncate if too long
+            if len(decision) > 150:
+                return decision[:150].rsplit(" ", 1)[0] + "..."
+            return decision
+    # Fallback: first line of plan
+    first_line = lines[0].strip() if lines else "Plan completed"
+    if len(first_line) > 150:
+        return first_line[:150].rsplit(" ", 1)[0] + "..."
+    return first_line

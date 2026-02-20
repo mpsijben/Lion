@@ -2,7 +2,8 @@
 """Lion - UserPromptSubmit hook for Claude Code.
 
 Intercepts prompts starting with "lion " and routes them
-to the Lion orchestrator. Zero tokens consumed for orchestration.
+to the Lion orchestrator. Runs Lion synchronously, then
+injects the result as context for Claude to relay.
 """
 
 import sys
@@ -13,61 +14,78 @@ import os
 SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def extract_summary(stdout):
+    """Extract the LION_SUMMARY JSON from Lion's stdout."""
+    if not stdout:
+        return None
+    for line in stdout.split("\n"):
+        if line.startswith("LION_SUMMARY:"):
+            try:
+                return json.loads(line[len("LION_SUMMARY:"):])
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
 def main():
-    # Read hook input from stdin (Claude Code sends JSON)
     try:
         hook_input = json.loads(sys.stdin.read())
     except json.JSONDecodeError:
-        sys.exit(0)  # Not valid JSON, let it through
-
-    # Extract the user's prompt
-    prompt = hook_input.get("prompt", "").strip()
-
-    # Check if this is a lion command
-    if not prompt.lower().startswith("lion "):
-        # Not a lion command - pass through to Claude Code normally
-        # IMPORTANT: no stdout output, or it gets added as context
         sys.exit(0)
 
-    # It IS a lion command - extract the actual prompt
-    lion_input = prompt[5:].strip()  # Remove "lion " prefix
+    raw_prompt = hook_input.get("prompt", "").strip()
 
-    # Get working directory from hook context
+    # Extract user text - IDE may prepend XML tags like <ide_opened_file>
+    lion_line = None
+    for line in raw_prompt.split("\n"):
+        stripped = line.strip()
+        if stripped.lower().startswith("lion "):
+            lion_line = stripped
+            break
+
+    if not lion_line:
+        sys.exit(0)
+
+    lion_input = lion_line[5:].strip()
     cwd = hook_input.get("cwd", os.getcwd())
     session_id = hook_input.get("session_id", "unknown")
 
-    # Set up environment for the lion process
     env = os.environ.copy()
     env["LION_SESSION_ID"] = session_id
     env["LION_CWD"] = cwd
     env["PYTHONPATH"] = SRC_DIR
 
-    # Spawn lion as a detached process
-    # Open /dev/tty so lion output goes directly to the terminal
     try:
-        tty = open("/dev/tty", "w")
-        subprocess.Popen(
+        result = subprocess.run(
             [sys.executable, "-m", "lion", lion_input],
             cwd=cwd,
             env=env,
-            stdout=tty,
-            stderr=tty,
-            start_new_session=True,
-        )
-    except OSError:
-        subprocess.Popen(
-            [sys.executable, "-m", "lion", lion_input],
-            cwd=cwd,
-            env=env,
-            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
 
-    # Block the prompt from reaching Claude
-    # JSON output with decision "block" prevents Claude from seeing this prompt
-    print(json.dumps({
-        "decision": "block",
-        "reason": "\U0001f981 Lion is orchestrating this prompt. Watch the terminal for progress.",
-    }))
+        summary_data = extract_summary(result.stdout)
+
+        if summary_data:
+            reason = summary_data.get("summary", "Lion voltooid")
+        elif result.returncode != 0:
+            reason = f"Lion fout (exit code {result.returncode})"
+        else:
+            reason = "Lion voltooid"
+
+    except Exception as e:
+        reason = f"Lion kon niet starten: {str(e)}"
+
+    # Exit 0 + stdout = context injected into Claude's conversation
+    context = (
+        f"<lion-result>\n"
+        f"The user's prompt was a Lion command that has already been executed.\n"
+        f"Do NOT process this prompt yourself. Instead, tell the user what Lion did.\n"
+        f"Lion result: {reason}\n"
+        f"</lion-result>"
+    )
+    print(context)
     sys.exit(0)
 
 
