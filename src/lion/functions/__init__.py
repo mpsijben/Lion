@@ -14,6 +14,7 @@ FUNCTIONS = {
     "test": execute_test,
     "pr": execute_pr,
     "create_tests": execute_create_tests,
+    "create_test": execute_create_tests,
     "lint": execute_lint,
     "typecheck": execute_typecheck,
 }

@@ -94,11 +94,7 @@ class Display:
         if not content:
             return
         _print(f"\n   {BOLD}Result:{RESET}")
-        # Show first 500 chars, trim long responses
-        text = content.strip()
-        if len(text) > 500:
-            text = text[:500] + f"\n   {DIM}... (truncated){RESET}"
-        for line in text.split("\n"):
+        for line in content.strip().split("\n"):
             _print(f"   {line}")
 
     @staticmethod
