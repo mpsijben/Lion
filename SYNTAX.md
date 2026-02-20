@@ -61,6 +61,54 @@ lion '"Build API" -> pride(3) -> test()'        # Run + auto-fix
 lion '"Build API" -> pride(3) -> test(nofix)'   # Alleen rapporteren
 ```
 
+### create_tests() -- Tests genereren
+
+Forceert het genereren van tests, zelfs als er geen bestaan. Analyseert de code en creëert comprehensive tests voor alle publieke functies/methodes.
+
+```bash
+lion '"Build API" -> pride(3) -> create_tests()'          # Genereer tests voor alles
+lion '"Build API" -> pride(3) -> create_tests(changed)'   # Alleen voor gewijzigde files
+lion '"Build API" -> pride(3) -> create_tests("api.py")'  # Specifiek bestand
+```
+
+Genereert automatisch:
+- Unit tests voor individuele functies
+- Edge cases (lege inputs, null values, grenzen)
+- Error handling tests
+- Happy path scenarios
+
+### lint() -- Linting met auto-fix
+
+Detecteert de linter (ruff, eslint, prettier, gofmt, rustfmt, etc.) en fixt automatisch style issues.
+
+```bash
+lion '"Build API" -> pride(3) -> lint()'         # Auto-fix met gedetecteerde linter
+lion '"Build API" -> pride(3) -> lint(nofix)'    # Alleen rapporteren
+lion '"Build API" -> pride(3) -> lint(ruff)'     # Specifieke linter
+```
+
+Ondersteunde linters per taal:
+- **Python**: ruff, black, flake8, pylint
+- **TypeScript/JavaScript**: eslint, prettier, biome
+- **Go**: gofmt, golangci-lint
+- **Rust**: rustfmt, clippy
+
+### typecheck() -- Type checking
+
+Draait de type checker (mypy, pyright, tsc, cargo check, go vet) en fixt automatisch type errors met AI.
+
+```bash
+lion '"Build API" -> pride(3) -> typecheck()'          # Run + auto-fix
+lion '"Build API" -> pride(3) -> typecheck(nofix)'     # Alleen rapporteren
+lion '"Build API" -> pride(3) -> typecheck(strict)'    # Strict mode
+```
+
+Ondersteunde type checkers:
+- **Python**: mypy, pyright
+- **TypeScript**: tsc
+- **Go**: go vet
+- **Rust**: cargo check
+
 ### pr(branch) -- Pull request maken
 
 Maakt een git branch, staged changes, genereert een commit message via AI, en maakt een PR aan via `gh` CLI.
@@ -132,6 +180,21 @@ lion '"Refactor the API routes" -> pride(2)'
 lion '"Build auth system" -> pride(5) -> devil() -> review() -> test() -> pr("feature/auth")'
 ```
 
+### Met test generatie
+```bash
+lion '"Build payment API" -> pride(3) -> create_tests() -> test() -> pr()'
+```
+
+### Code quality pipeline
+```bash
+lion '"Refactor user module" -> pride(3) -> lint() -> typecheck() -> review()'
+```
+
+### Volledige quality pipeline
+```bash
+lion '"Build checkout flow" -> pride(3) -> create_tests() -> test() -> lint() -> typecheck() -> review() -> pr()'
+```
+
 ---
 
 ## Custom patterns (toekomst)
@@ -170,6 +233,9 @@ low_pipeline = ""
 | pride(n) | Werkt |
 | review() | Werkt |
 | test() | Werkt |
+| create_tests() | Werkt |
+| lint() | Werkt |
+| typecheck() | Werkt |
 | pr(branch) | Werkt |
 | devil() | Nog niet gebouwd |
 | future(Nm) | Nog niet gebouwd |

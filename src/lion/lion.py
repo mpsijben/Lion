@@ -53,6 +53,11 @@ def detect_complexity(prompt: str, config: dict) -> str:
 
 
 def main():
+    # Prevent recursive lion calls from child claude -p processes
+    if os.environ.get("LION_NO_RECURSE"):
+        print("Lion: recursive call blocked (called from within a Lion agent)")
+        sys.exit(0)
+
     if len(sys.argv) < 2:
         print("\U0001f981 Lion - Language for Intelligent Orchestration Networks")
         print()

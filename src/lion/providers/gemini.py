@@ -1,4 +1,4 @@
-"""Claude Code CLI provider - wraps `claude -p`."""
+"""Gemini CLI provider - wraps `gemini` CLI."""
 
 import subprocess
 import json
@@ -7,8 +7,8 @@ import time
 from .base import Provider, AgentResult
 
 
-class ClaudeProvider(Provider):
-    name = "claude"
+class GeminiProvider(Provider):
+    name = "gemini"
 
     @staticmethod
     def _safe_env():
@@ -18,10 +18,8 @@ class ClaudeProvider(Provider):
         return env
 
     def ask(self, prompt, system_prompt="", cwd="."):
-        """Use claude -p for non-interactive single-turn queries."""
-        cmd = ["claude", "-p", prompt, "--output-format", "json"]
-        if system_prompt:
-            cmd.extend(["--system-prompt", system_prompt])
+        """Use gemini CLI for non-interactive single-turn queries."""
+        cmd = ["gemini", "-o", "json", prompt]
 
         env = self._safe_env()
 
@@ -33,7 +31,7 @@ class ClaudeProvider(Provider):
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
-                content="", model="claude", tokens_used=0,
+                content="", model="gemini", tokens_used=0,
                 duration_seconds=time.time() - start,
                 success=False, error="Timeout after 300s"
             )
@@ -41,18 +39,12 @@ class ClaudeProvider(Provider):
 
         if result.returncode != 0:
             return AgentResult(
-                content="", model="claude", tokens_used=0,
+                content="", model="gemini", tokens_used=0,
                 duration_seconds=duration, success=False,
                 error=result.stderr or f"Exit code {result.returncode}"
             )
 
-        parsed = self._parse_output(result.stdout, duration)
-
-        # Flag empty responses as potential issues
-        if parsed.success and not parsed.content.strip():
-            parsed.error = "claude -p returned empty response"
-
-        return parsed
+        return self._parse_output(result.stdout, duration)
 
     def ask_with_files(self, prompt, files, system_prompt="", cwd="."):
         """Include file contents in the prompt."""
@@ -68,7 +60,7 @@ class ClaudeProvider(Provider):
         return self.ask(full_prompt, system_prompt, cwd)
 
     def implement(self, prompt, cwd="."):
-        """Use claude -p to make actual file changes."""
+        """Use gemini CLI with --yolo to make actual file changes."""
         impl_prompt = (
             f"{prompt}\n\n"
             "IMPORTANT: Make the actual code changes. Edit the files directly. "
@@ -77,11 +69,7 @@ class ClaudeProvider(Provider):
             "from documentation or proposals. Only write/edit code files."
         )
 
-        cmd = [
-            "claude", "-p", impl_prompt,
-            "--output-format", "json",
-            "--dangerously-skip-permissions",
-        ]
+        cmd = ["gemini", "-o", "json", "--yolo", impl_prompt]
 
         env = self._safe_env()
 
@@ -93,7 +81,7 @@ class ClaudeProvider(Provider):
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
-                content="", model="claude", tokens_used=0,
+                content="", model="gemini", tokens_used=0,
                 duration_seconds=time.time() - start,
                 success=False, error="Timeout after 600s"
             )
@@ -101,54 +89,46 @@ class ClaudeProvider(Provider):
 
         if result.returncode != 0:
             return AgentResult(
-                content="", model="claude", tokens_used=0,
+                content="", model="gemini", tokens_used=0,
                 duration_seconds=duration, success=False,
-                error=result.stderr
+                error=result.stderr or f"Exit code {result.returncode}"
             )
 
         return self._parse_output(result.stdout, duration)
 
     def _parse_output(self, stdout, duration):
-        """Parse claude -p --output-format json output.
+        """Parse gemini -o json output.
 
-        Returns a JSON array. We find the last entry with type "result".
+        Gemini returns: {"response": "...", "stats": {...}}
         """
         try:
             output = json.loads(stdout)
 
-            # JSON array format - find the result entry
-            if isinstance(output, list):
-                for entry in reversed(output):
-                    if isinstance(entry, dict) and entry.get("type") == "result":
-                        return AgentResult(
-                            content=entry.get("result", ""),
-                            model="claude",
-                            tokens_used=0,
-                            duration_seconds=duration,
-                            success=not entry.get("is_error", False),
-                            error=entry.get("result", "") if entry.get("is_error") else None,
-                        )
-                # No result entry found, use last entry's content
-                if output:
-                    last = output[-1]
-                    content = last.get("result", last.get("content", str(last)))
-                    return AgentResult(
-                        content=content, model="claude", tokens_used=0,
-                        duration_seconds=duration, success=True
-                    )
-
-            # Single object format (fallback)
             if isinstance(output, dict):
-                return AgentResult(
-                    content=output.get("result", stdout),
-                    model="claude", tokens_used=0,
-                    duration_seconds=duration, success=True
+                content = output.get("response", "")
+                tokens = 0
+                stats = output.get("stats", {})
+                for model_stats in stats.get("models", {}).values():
+                    tokens += model_stats.get("tokens", {}).get("total", 0)
+
+                parsed = AgentResult(
+                    content=content,
+                    model="gemini",
+                    tokens_used=tokens,
+                    duration_seconds=duration,
+                    success=True,
                 )
+
+                if not content.strip():
+                    parsed.error = "gemini returned empty response"
+
+                return parsed
+
         except json.JSONDecodeError:
             pass
 
         # Raw text fallback
         return AgentResult(
-            content=stdout, model="claude", tokens_used=0,
+            content=stdout, model="gemini", tokens_used=0,
             duration_seconds=duration, success=True
         )
