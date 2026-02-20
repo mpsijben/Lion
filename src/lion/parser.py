@@ -9,6 +9,12 @@ Examples:
 
     "Build X" -> pride(claude, gemini)
         -> prompt="Build X", steps=[Step("pride", ["claude", "gemini"])]
+
+    "Build X" -> pride(5) <-> review()
+        -> feedback=True on review step (re-run producer with same agent count)
+
+    "Build X" -> pride(5) <1-> review()
+        -> feedback=True, feedback_agents=1 on review step (re-run producer with 1 agent)
 """
 
 import re
@@ -21,6 +27,8 @@ class PipelineStep:
     function: str       # e.g. "pride", "review", "devil"
     args: list[Any] = field(default_factory=list)
     kwargs: dict = field(default_factory=dict)
+    feedback: bool = False          # True if preceded by <-> or <N->
+    feedback_agents: int | None = None  # Override agent count for re-run (None = use original)
 
 
 def parse_lion_input(raw: str, config: dict = None) -> tuple[str, list[PipelineStep]]:
@@ -34,18 +42,32 @@ def parse_lion_input(raw: str, config: dict = None) -> tuple[str, list[PipelineS
     if not pipeline_str:
         return prompt, []
 
-    # Split pipeline on " -> "
-    step_strings = re.split(r"\s*->\s*", pipeline_str)
+    # Split pipeline on -> and <-> / <N-> while preserving the delimiter.
+    # Matches: ->, <->, <1->, <3->, etc.
+    tokens = re.split(r"\s*(<\d*->|->)\s*", pipeline_str)
 
+    # tokens alternates: [step, delimiter, step, delimiter, step, ...]
+    # Even indices are step strings, odd indices are delimiters.
     steps = []
-    for step_str in step_strings:
-        step_str = step_str.strip()
+    for idx in range(0, len(tokens), 2):
+        step_str = tokens[idx].strip()
         if not step_str:
             continue
 
         step = _parse_step(step_str, config)
-        if step:
-            steps.append(step)
+        if not step:
+            continue
+
+        # Check if the delimiter before this step was a feedback operator
+        if idx > 0:
+            delimiter = tokens[idx - 1]
+            feedback_match = re.match(r"<(\d*)->", delimiter)
+            if feedback_match:
+                step.feedback = True
+                agent_str = feedback_match.group(1)
+                step.feedback_agents = int(agent_str) if agent_str else None
+
+        steps.append(step)
 
     return prompt, steps
 
@@ -72,9 +94,9 @@ def _split_prompt_and_pipeline(raw: str) -> tuple[str, str]:
                 return prompt, rest[2:].strip()
             return prompt, ""
 
-    # Case 2: No quotes -- find the first -> followed by a valid function name
+    # Case 2: No quotes -- find the first -> or <-> followed by a valid function name
     # Valid function looks like: word or word() or word(args)
-    for match in re.finditer(r"\s*->\s*", raw):
+    for match in re.finditer(r"\s*(?:<\d*->|->)\s*", raw):
         rest_after = raw[match.end():].strip()
         # Check if what follows looks like a pipeline step (starts with a word char)
         if re.match(r"[a-zA-Z_]\w*", rest_after):

@@ -287,6 +287,91 @@ class TestPipelineStep:
         assert step.kwargs == {"branch": "main"}
 
 
+class TestFeedbackOperator:
+    """Tests for <-> and <N-> feedback operator parsing."""
+
+    def test_basic_feedback_operator(self):
+        """Test parsing basic <-> feedback operator."""
+        prompt, steps = parse_lion_input('"Build X" -> pride(5) <-> review()')
+        assert prompt == "Build X"
+        assert len(steps) == 2
+        assert steps[0].function == "pride"
+        assert steps[0].feedback is False
+        assert steps[1].function == "review"
+        assert steps[1].feedback is True
+        assert steps[1].feedback_agents is None  # Use original count
+
+    def test_feedback_with_agent_count(self):
+        """Test parsing <N-> operator with explicit agent count."""
+        prompt, steps = parse_lion_input('"Build X" -> pride(5) <1-> review()')
+        assert len(steps) == 2
+        assert steps[1].feedback is True
+        assert steps[1].feedback_agents == 1
+
+    def test_feedback_with_larger_agent_count(self):
+        """Test parsing <3-> operator."""
+        prompt, steps = parse_lion_input('"Build X" -> pride(5) <3-> review()')
+        assert steps[1].feedback is True
+        assert steps[1].feedback_agents == 3
+
+    def test_multiple_feedback_operators(self):
+        """Test parsing multiple <-> operators in pipeline."""
+        prompt, steps = parse_lion_input(
+            '"Build X" -> pride(5) <1-> review() <-> devil() -> test()'
+        )
+        assert len(steps) == 4
+        assert steps[0].function == "pride"
+        assert steps[0].feedback is False
+        assert steps[1].function == "review"
+        assert steps[1].feedback is True
+        assert steps[1].feedback_agents == 1
+        assert steps[2].function == "devil"
+        assert steps[2].feedback is True
+        assert steps[2].feedback_agents is None
+        assert steps[3].function == "test"
+        assert steps[3].feedback is False
+
+    def test_no_feedback_operators(self):
+        """Test that regular -> does not set feedback flags."""
+        prompt, steps = parse_lion_input('"Build X" -> pride(5) -> review() -> test()')
+        for step in steps:
+            assert step.feedback is False
+            assert step.feedback_agents is None
+
+    def test_feedback_operator_with_unquoted_prompt(self):
+        """Test <-> with unquoted prompt."""
+        prompt, steps = parse_lion_input("Build X -> pride(5) <-> review()")
+        assert prompt == "Build X"
+        assert len(steps) == 2
+        assert steps[1].feedback is True
+
+    def test_mixed_operators_complex(self):
+        """Test complex pipeline with mixed operators."""
+        prompt, steps = parse_lion_input(
+            '"Auth system" -> pride(5) <1-> review() <-> devil() -> test() -> pr(feature/auth)'
+        )
+        assert prompt == "Auth system"
+        assert len(steps) == 5
+        assert steps[0].function == "pride"
+        assert steps[0].feedback is False
+        assert steps[1].function == "review"
+        assert steps[1].feedback is True
+        assert steps[1].feedback_agents == 1
+        assert steps[2].function == "devil"
+        assert steps[2].feedback is True
+        assert steps[2].feedback_agents is None
+        assert steps[3].function == "test"
+        assert steps[3].feedback is False
+        assert steps[4].function == "pr"
+        assert steps[4].feedback is False
+
+    def test_pipeline_step_feedback_defaults(self):
+        """Test PipelineStep default feedback values."""
+        step = PipelineStep(function="test")
+        assert step.feedback is False
+        assert step.feedback_agents is None
+
+
 class TestEdgeCases:
     """Edge case tests for parser."""
 

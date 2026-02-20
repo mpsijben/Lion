@@ -5,7 +5,7 @@ import time
 import pytest
 from unittest.mock import patch, MagicMock
 
-from lion.pipeline import PipelineExecutor, PipelineResult
+from lion.pipeline import PipelineExecutor, PipelineResult, _needs_refinement
 from lion.parser import PipelineStep
 from lion.memory import SharedMemory
 
@@ -510,3 +510,307 @@ class TestPipelineExecutorEdgeCases:
                 executor.run()
 
         assert received_cost_manager[0] is mock_cost_manager
+
+
+class TestNeedsRefinement:
+    """Tests for _needs_refinement function."""
+
+    def test_critical_issues_triggers_refinement(self):
+        assert _needs_refinement({"critical_count": 1}) is True
+
+    def test_warning_issues_triggers_refinement(self):
+        assert _needs_refinement({"warning_count": 2}) is True
+
+    def test_issues_list_triggers_refinement(self):
+        assert _needs_refinement({"issues": [{"severity": "warning"}]}) is True
+
+    def test_has_feedback_flag_triggers_refinement(self):
+        assert _needs_refinement({"has_feedback": True}) is True
+
+    def test_errors_count_triggers_refinement(self):
+        assert _needs_refinement({"errors_count": 3}) is True
+
+    def test_no_issues_skips_refinement(self):
+        assert _needs_refinement({"critical_count": 0, "warning_count": 0}) is False
+
+    def test_empty_issues_list_skips_refinement(self):
+        assert _needs_refinement({"issues": []}) is False
+
+    def test_empty_result_skips_refinement(self):
+        assert _needs_refinement({}) is False
+
+    def test_zero_errors_skips_refinement(self):
+        assert _needs_refinement({"errors_count": 0, "has_feedback": False}) is False
+
+
+class TestFeedbackLoop:
+    """Tests for the <-> feedback loop mechanism."""
+
+    def test_feedback_triggers_producer_rerun(self, temp_run_dir, sample_config):
+        """Test that <-> step with issues triggers a producer re-run."""
+        call_order = []
+
+        def mock_pride(*args, **kwargs):
+            call_order.append("pride")
+            return {
+                "success": True,
+                "tokens_used": 100,
+                "files_changed": ["auth.py"],
+                "code": "def auth(): pass",
+                "deliberation_summary": "Built auth system",
+                "agent_summaries": [{"agent": "agent_1", "summary": "Done"}],
+                "final_decision": "Use JWT",
+            }
+
+        def mock_review(*args, **kwargs):
+            call_order.append("review")
+            return {
+                "success": True,
+                "tokens_used": 50,
+                "files_changed": [],
+                "content": "Found critical SQL injection vulnerability",
+                "issues": [{"severity": "critical", "title": "SQL injection"}],
+                "critical_count": 1,
+                "warning_count": 0,
+            }
+
+        with patch("lion.pipeline.FUNCTIONS", {"pride": mock_pride, "review": mock_review}):
+            with patch("lion.pipeline.Display"):
+                executor = PipelineExecutor(
+                    prompt="Build auth",
+                    steps=[
+                        PipelineStep(function="pride", args=[5]),
+                        PipelineStep(function="review", feedback=True),
+                    ],
+                    config=sample_config,
+                    run_dir=temp_run_dir,
+                    cwd="/tmp",
+                )
+
+                result = executor.run()
+
+        # pride should be called twice: initial + feedback re-run
+        assert call_order == ["pride", "review", "pride"]
+
+    def test_feedback_skipped_when_no_issues(self, temp_run_dir, sample_config):
+        """Test that <-> step with no issues skips the re-run."""
+        call_order = []
+
+        def mock_pride(*args, **kwargs):
+            call_order.append("pride")
+            return {
+                "success": True,
+                "tokens_used": 100,
+                "files_changed": [],
+                "code": "clean code",
+                "deliberation_summary": "All good",
+            }
+
+        def mock_review(*args, **kwargs):
+            call_order.append("review")
+            return {
+                "success": True,
+                "tokens_used": 50,
+                "files_changed": [],
+                "content": "Code looks good, no issues found",
+                "issues": [],
+                "critical_count": 0,
+                "warning_count": 0,
+            }
+
+        with patch("lion.pipeline.FUNCTIONS", {"pride": mock_pride, "review": mock_review}):
+            with patch("lion.pipeline.Display"):
+                executor = PipelineExecutor(
+                    prompt="Build feature",
+                    steps=[
+                        PipelineStep(function="pride", args=[3]),
+                        PipelineStep(function="review", feedback=True),
+                    ],
+                    config=sample_config,
+                    run_dir=temp_run_dir,
+                    cwd="/tmp",
+                )
+
+                result = executor.run()
+
+        # pride should only be called once (no re-run needed)
+        assert call_order == ["pride", "review"]
+
+    def test_feedback_uses_custom_agent_count(self, temp_run_dir, sample_config):
+        """Test that <N-> passes the correct agent count to re-run."""
+        rerun_args = []
+
+        def mock_pride(*args, **kwargs):
+            step = kwargs.get("step")
+            rerun_args.append(step.args[0] if step.args else None)
+            return {
+                "success": True,
+                "tokens_used": 100,
+                "files_changed": [],
+                "code": "code",
+                "deliberation_summary": "summary",
+            }
+
+        def mock_review(*args, **kwargs):
+            return {
+                "success": True,
+                "tokens_used": 50,
+                "files_changed": [],
+                "content": "Found warning",
+                "issues": [{"severity": "warning", "title": "Perf issue"}],
+                "critical_count": 0,
+                "warning_count": 1,
+            }
+
+        with patch("lion.pipeline.FUNCTIONS", {"pride": mock_pride, "review": mock_review}):
+            with patch("lion.pipeline.Display"):
+                executor = PipelineExecutor(
+                    prompt="Build feature",
+                    steps=[
+                        PipelineStep(function="pride", args=[5]),
+                        PipelineStep(
+                            function="review",
+                            feedback=True,
+                            feedback_agents=1,
+                        ),
+                    ],
+                    config=sample_config,
+                    run_dir=temp_run_dir,
+                    cwd="/tmp",
+                )
+
+                result = executor.run()
+
+        # First call: pride(5), second call (re-run): pride(1)
+        assert rerun_args == [5, 1]
+
+    def test_feedback_uses_original_count_when_no_override(
+        self, temp_run_dir, sample_config
+    ):
+        """Test that <-> (no N) uses the original agent count."""
+        rerun_args = []
+
+        def mock_pride(*args, **kwargs):
+            step = kwargs.get("step")
+            rerun_args.append(step.args[0] if step.args else None)
+            return {
+                "success": True,
+                "tokens_used": 100,
+                "files_changed": [],
+                "code": "code",
+                "deliberation_summary": "summary",
+            }
+
+        def mock_review(*args, **kwargs):
+            return {
+                "success": True,
+                "tokens_used": 50,
+                "files_changed": [],
+                "content": "Found issue",
+                "issues": [{"severity": "critical", "title": "Bug"}],
+                "critical_count": 1,
+                "warning_count": 0,
+            }
+
+        with patch("lion.pipeline.FUNCTIONS", {"pride": mock_pride, "review": mock_review}):
+            with patch("lion.pipeline.Display"):
+                executor = PipelineExecutor(
+                    prompt="Build feature",
+                    steps=[
+                        PipelineStep(function="pride", args=[5]),
+                        PipelineStep(
+                            function="review",
+                            feedback=True,
+                            feedback_agents=None,
+                        ),
+                    ],
+                    config=sample_config,
+                    run_dir=temp_run_dir,
+                    cwd="/tmp",
+                )
+
+                result = executor.run()
+
+        # Both calls should use 5 agents
+        assert rerun_args == [5, 5]
+
+    def test_find_last_producer(self, temp_run_dir, sample_config):
+        """Test _find_last_producer finds the correct producer step."""
+        steps = [
+            PipelineStep(function="pride", args=[3]),
+            PipelineStep(function="review", feedback=True),
+            PipelineStep(function="devil", feedback=True),
+            PipelineStep(function="test"),
+        ]
+
+        with patch("lion.pipeline.Display"):
+            executor = PipelineExecutor(
+                prompt="Test",
+                steps=steps,
+                config=sample_config,
+                run_dir=temp_run_dir,
+                cwd="/tmp",
+            )
+
+        # From review (idx 1), last producer is pride (idx 0)
+        step, idx = executor._find_last_producer(1)
+        assert step.function == "pride"
+        assert idx == 0
+
+        # From devil (idx 2), last producer is still pride (idx 0)
+        step, idx = executor._find_last_producer(2)
+        assert step.function == "pride"
+        assert idx == 0
+
+    def test_find_last_producer_none(self, temp_run_dir, sample_config):
+        """Test _find_last_producer returns None when no producer exists."""
+        steps = [
+            PipelineStep(function="review", feedback=True),
+        ]
+
+        with patch("lion.pipeline.Display"):
+            executor = PipelineExecutor(
+                prompt="Test",
+                steps=steps,
+                config=sample_config,
+                run_dir=temp_run_dir,
+                cwd="/tmp",
+            )
+
+        step, idx = executor._find_last_producer(0)
+        assert step is None
+        assert idx == -1
+
+    def test_feedback_without_producer_is_noop(self, temp_run_dir, sample_config):
+        """Test that feedback step without a prior producer is gracefully skipped."""
+        call_order = []
+
+        def mock_review(*args, **kwargs):
+            call_order.append("review")
+            return {
+                "success": True,
+                "tokens_used": 50,
+                "files_changed": [],
+                "content": "Found issues",
+                "issues": [{"severity": "critical", "title": "Bug"}],
+                "critical_count": 1,
+                "warning_count": 0,
+            }
+
+        with patch("lion.pipeline.FUNCTIONS", {"review": mock_review}):
+            with patch("lion.pipeline.Display"):
+                executor = PipelineExecutor(
+                    prompt="Review only",
+                    steps=[
+                        PipelineStep(function="review", feedback=True),
+                    ],
+                    config=sample_config,
+                    run_dir=temp_run_dir,
+                    cwd="/tmp",
+                )
+
+                result = executor.run()
+
+        # review runs but no re-run happens (no producer to go back to)
+        assert call_order == ["review"]
+        assert result.success is True

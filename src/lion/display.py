@@ -30,11 +30,20 @@ class Display:
         _print(f"\n{LION} Lion starting...")
         _print(f"   {BOLD}Prompt:{RESET} {prompt}")
         if steps:
-            pipeline_str = " -> ".join(
-                f"{s.function}({', '.join(str(a) for a in s.args)})"
-                for s in steps
-            )
-            _print(f"   {BOLD}Pipeline:{RESET} {pipeline_str}")
+            parts = []
+            for i, s in enumerate(steps):
+                step_str = f"{s.function}({', '.join(str(a) for a in s.args)})"
+                if i > 0:
+                    if s.feedback:
+                        if s.feedback_agents is not None:
+                            op = f" <{s.feedback_agents}-> "
+                        else:
+                            op = " <-> "
+                    else:
+                        op = " -> "
+                    parts.append(op)
+                parts.append(step_str)
+            _print(f"   {BOLD}Pipeline:{RESET} {''.join(parts)}")
         _print("")
 
     @staticmethod
@@ -56,6 +65,7 @@ class Display:
             "review": "\U0001f4dd",     # memo
             "test": "\U0001f9ea",       # test tube
             "pr": "\U0001f680",         # rocket
+            "refine": "\U0001f504",     # counterclockwise arrows (feedback loop)
         }
         icon = icons.get(name, ">")
         _print(f"\n   {icon} {BOLD}{name.upper()}{RESET}: {description}")
