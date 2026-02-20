@@ -1,0 +1,18 @@
+# Lion Configuration - Phase 1 (MVP)
+
+[general]
+default_profile = "premium"
+max_pride_size = 5
+max_retries = 3
+max_deliberation_rounds = 1
+verbose = false
+
+[providers]
+default = "claude"
+
+[complexity]
+high_signals = ["build", "create", "design", "architect", "migrate", "refactor", "system", "complete", "full"]
+low_signals = ["fix", "bug", "typo", "rename", "change", "update", "move", "delete", "remove"]
+high_pipeline = "pride(3)"
+medium_pipeline = "pride(2)"
+low_pipeline = ""

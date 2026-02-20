@@ -1,0 +1,112 @@
+"""Terminal output formatting for Lion."""
+
+import sys
+
+# ANSI colors
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+BLUE = "\033[34m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+LION = f"{YELLOW}\U0001f981{RESET}"
+
+
+def _print(msg):
+    """Print to terminal, bypassing any stdout redirection."""
+    try:
+        with open("/dev/tty", "w") as tty:
+            tty.write(msg + "\n")
+            tty.flush()
+    except OSError:
+        print(msg, file=sys.stderr)
+
+
+class Display:
+
+    @staticmethod
+    def pipeline_start(prompt, steps):
+        _print(f"\n{LION} Lion starting...")
+        _print(f"   {BOLD}Prompt:{RESET} {prompt}")
+        if steps:
+            pipeline_str = " -> ".join(
+                f"{s.function}({', '.join(str(a) for a in s.args)})"
+                for s in steps
+            )
+            _print(f"   {BOLD}Pipeline:{RESET} {pipeline_str}")
+        _print("")
+
+    @staticmethod
+    def auto_pipeline(complexity, pipeline):
+        _print(f"   {DIM}Complexity: {complexity} -> auto pipeline: {pipeline}{RESET}")
+
+    @staticmethod
+    def pride_start(n, models):
+        model_str = ", ".join(models)
+        _print(f"   {BLUE}> Starting pride of {n} ({model_str}){RESET}")
+
+    @staticmethod
+    def phase(name, description):
+        icons = {
+            "propose": "\U0001f4ad",
+            "critique": "\U0001f50d",
+            "converge": "\U0001f3af",
+            "implement": "\U0001f528",
+        }
+        icon = icons.get(name, ">")
+        _print(f"\n   {icon} {BOLD}{name.upper()}{RESET}: {description}")
+
+    @staticmethod
+    def agent_proposal(num, model, preview):
+        preview_clean = preview.replace("\n", " ")[:150]
+        _print(f"   +-- Agent {num} ({model}): {DIM}{preview_clean}...{RESET}")
+
+    @staticmethod
+    def agent_critique(num, preview):
+        preview_clean = preview.replace("\n", " ")[:150]
+        _print(f"   |-- Agent {num} critique: {DIM}{preview_clean}...{RESET}")
+
+    @staticmethod
+    def convergence(preview):
+        preview_clean = preview.replace("\n", " ")[:300]
+        _print(f"   +-- {GREEN}Consensus:{RESET} {DIM}{preview_clean}...{RESET}")
+
+    @staticmethod
+    def step_start(num, total, step):
+        args_str = ", ".join(str(a) for a in step.args) if step.args else ""
+        _print(f"\n   [{num}/{total}] {BOLD}{step.function}({args_str}){RESET}")
+
+    @staticmethod
+    def step_complete(func_name, result):
+        _print(f"   {GREEN}v{RESET} {func_name} complete")
+
+    @staticmethod
+    def step_error(func_name, error):
+        _print(f"   {RED}x{RESET} {func_name} failed: {error}")
+
+    @staticmethod
+    def final_result(result):
+        _print(f"\n{'=' * 50}")
+        if result.success:
+            _print(f"{LION} {GREEN}Done!{RESET}")
+        else:
+            _print(f"{LION} {YELLOW}Completed with errors{RESET}")
+
+        _print(f"   Steps: {result.steps_completed}/{result.total_steps}")
+        _print(f"   Duration: {result.total_duration:.1f}s")
+        if result.files_changed:
+            _print(f"   Files changed: {', '.join(result.files_changed)}")
+        if result.errors:
+            _print(f"   {RED}Errors:{RESET}")
+            for e in result.errors:
+                _print(f"     - {e}")
+        _print("")
+
+    @staticmethod
+    def cancelled():
+        _print(f"\n{LION} Cancelled by user.")
+
+    @staticmethod
+    def error(message):
+        _print(f"\n{LION} {RED}Error:{RESET} {message}")

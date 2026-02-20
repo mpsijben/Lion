@@ -1,0 +1,294 @@
+"""pride() - Multi-agent deliberation.
+
+The heart of Lion. Spawns multiple agents that:
+1. Propose approaches independently (parallel)
+2. Critique each other's proposals (parallel)
+3. Converge on a consensus plan (single agent)
+4. Implement the plan (with file editing)
+"""
+
+import concurrent.futures
+import time
+
+from ..memory import SharedMemory, MemoryEntry
+from ..providers import get_provider
+from ..display import Display
+
+PROPOSE_PROMPT = """You are Agent {agent_num} in a team of {total_agents} working on this task:
+
+TASK: {prompt}
+
+WORKING DIRECTORY: {cwd}
+
+Propose your approach. Be specific about:
+1. Architecture and design decisions
+2. Files to create or modify
+3. Key implementation details
+4. Potential risks or edge cases
+
+Keep it concise but actionable."""
+
+CRITIQUE_PROMPT = """You are Agent {agent_num} reviewing proposals from your team.
+
+TASK: {prompt}
+
+YOUR PROPOSAL:
+{own_proposal}
+
+OTHER PROPOSALS:
+{other_proposals}
+
+For each other proposal, state:
+1. What you agree with
+2. What concerns you
+3. What they thought of that you missed
+4. Your updated recommendation"""
+
+CONVERGE_PROMPT = """You are the lead synthesizer. Your team proposed and critiqued approaches.
+
+TASK: {prompt}
+
+ALL PROPOSALS AND CRITIQUES:
+{deliberation}
+
+Create the FINAL PLAN:
+1. Best elements from each proposal
+2. All valid critiques addressed
+3. Concrete task list for implementation
+
+Format:
+DECISION: [summary of approach and key choices]
+
+TASKS:
+1. [task description] | files: [file paths]
+2. [task description] | files: [file paths] | depends_on: [1]
+..."""
+
+IMPLEMENT_PROMPT = """Implement this plan completely.
+
+OVERALL GOAL: {prompt}
+
+PLAN:
+{plan}
+
+Make all the actual code changes. Create and edit files as needed.
+Be thorough and implement the full plan."""
+
+
+def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None):
+    """Execute a pride deliberation."""
+
+    agents = _resolve_agents(step, config)
+    n_agents = len(agents)
+
+    Display.pride_start(n_agents, [a.name for a in agents])
+
+    # PHASE 1: PROPOSE (parallel)
+    Display.phase("propose", "Each agent proposes independently...")
+    proposals = _parallel_propose(agents, prompt, cwd, memory)
+
+    if not proposals:
+        return {
+            "success": False,
+            "error": "All agents failed to propose",
+            "tokens_used": 0,
+            "files_changed": [],
+        }
+
+    # PHASE 2: CRITIQUE (parallel, skip if only 1 agent)
+    if n_agents > 1:
+        Display.phase("critique", "Agents review each other's proposals...")
+        _parallel_critique(agents, prompt, proposals, cwd, memory)
+
+    # PHASE 3: CONVERGE (single agent)
+    Display.phase("converge", "Synthesizing into final plan...")
+    plan = _converge(agents[0], prompt, memory, cwd)
+
+    # PHASE 4: IMPLEMENT (single agent, writes files)
+    Display.phase("implement", "Building the solution...")
+    implementation = _implement(agents[0], prompt, plan, cwd, memory)
+
+    return {
+        "success": True,
+        "plan": plan,
+        "code": implementation.get("code", ""),
+        "decisions": _extract_decisions(memory),
+        "files_changed": implementation.get("files_changed", []),
+        "tokens_used": 0,
+        "deliberation_summary": memory.format_for_prompt(memory.read_all()),
+    }
+
+
+def _resolve_agents(step, config):
+    """Determine which providers to use for the pride."""
+    if step.args:
+        first_arg = step.args[0]
+        # Explicit providers: pride(claude, gemini)
+        if isinstance(first_arg, str) and not str(first_arg).isdigit():
+            return [get_provider(name, config) for name in step.args]
+        # Number of agents: pride(3)
+        n = int(first_arg)
+        n = max(1, min(n, 5))  # Clamp between 1 and 5
+        return [get_provider("claude", config) for _ in range(n)]
+    # Default: 3 claude agents
+    return [get_provider("claude", config) for _ in range(3)]
+
+
+def _parallel_propose(agents, prompt, cwd, memory):
+    """Run propose phase in parallel."""
+    proposals = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(agents)) as executor:
+        futures = {}
+        for i, agent in enumerate(agents):
+            agent_prompt = PROPOSE_PROMPT.format(
+                agent_num=i + 1,
+                total_agents=len(agents),
+                prompt=prompt,
+                cwd=cwd,
+            )
+            futures[executor.submit(agent.ask, agent_prompt, "", cwd)] = i
+
+        for future in concurrent.futures.as_completed(futures):
+            i = futures[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                Display.step_error(f"Agent {i + 1} propose", str(e))
+                continue
+
+            if not result.success:
+                Display.step_error(f"Agent {i + 1} propose", result.error or "Unknown error")
+                continue
+
+            proposals.append({
+                "agent": f"agent_{i + 1}",
+                "content": result.content,
+                "model": result.model,
+                "tokens": result.tokens_used,
+            })
+
+            memory.write(MemoryEntry(
+                timestamp=time.time(),
+                phase="propose",
+                agent=f"agent_{i + 1}",
+                type="proposal",
+                content=result.content,
+                metadata={"model": result.model},
+            ))
+
+            Display.agent_proposal(i + 1, result.model, result.content[:150])
+
+    return proposals
+
+
+def _parallel_critique(agents, prompt, proposals, cwd, memory):
+    """Run critique phase in parallel."""
+    critiques = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(agents)) as executor:
+        futures = {}
+        for i, agent in enumerate(agents):
+            # Find this agent's proposal
+            own = next((p for p in proposals if p["agent"] == f"agent_{i + 1}"), None)
+            own_content = own["content"] if own else "(no proposal)"
+
+            other_proposals = "\n\n".join(
+                f"Agent {j + 1} ({p['model']}): {p['content']}"
+                for j, p in enumerate(proposals)
+                if p["agent"] != f"agent_{i + 1}"
+            )
+
+            critique_prompt = CRITIQUE_PROMPT.format(
+                agent_num=i + 1,
+                prompt=prompt,
+                own_proposal=own_content,
+                other_proposals=other_proposals,
+            )
+            futures[executor.submit(agent.ask, critique_prompt, "", cwd)] = i
+
+        for future in concurrent.futures.as_completed(futures):
+            i = futures[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                Display.step_error(f"Agent {i + 1} critique", str(e))
+                continue
+
+            if not result.success:
+                continue
+
+            critiques.append({
+                "agent": f"agent_{i + 1}",
+                "content": result.content,
+                "model": result.model,
+            })
+
+            memory.write(MemoryEntry(
+                timestamp=time.time(),
+                phase="critique",
+                agent=f"agent_{i + 1}",
+                type="critique",
+                content=result.content,
+                metadata={"model": result.model},
+            ))
+
+            Display.agent_critique(i + 1, result.content[:150])
+
+    return critiques
+
+
+def _converge(lead_agent, prompt, memory, cwd):
+    """Synthesize all proposals and critiques into a plan."""
+    all_entries = memory.read_all()
+    deliberation_text = memory.format_for_prompt(all_entries)
+
+    converge_prompt = CONVERGE_PROMPT.format(
+        prompt=prompt,
+        deliberation=deliberation_text,
+    )
+
+    result = lead_agent.ask(converge_prompt, "", cwd)
+
+    memory.write(MemoryEntry(
+        timestamp=time.time(),
+        phase="converge",
+        agent="synthesizer",
+        type="decision",
+        content=result.content,
+        metadata={"model": result.model},
+    ))
+
+    Display.convergence(result.content[:300])
+    return result.content
+
+
+def _implement(lead_agent, prompt, plan, cwd, memory):
+    """Implement the converged plan by writing files."""
+    impl_prompt = IMPLEMENT_PROMPT.format(
+        prompt=prompt,
+        plan=plan,
+    )
+
+    result = lead_agent.implement(impl_prompt, cwd)
+
+    memory.write(MemoryEntry(
+        timestamp=time.time(),
+        phase="implement",
+        agent="implementer",
+        type="code",
+        content=result.content,
+        metadata={"model": result.model},
+    ))
+
+    return {
+        "code": result.content,
+        "files_changed": [],
+        "tokens": result.tokens_used,
+    }
+
+
+def _extract_decisions(memory):
+    """Extract key decisions from the deliberation."""
+    decisions = memory.get_decisions()
+    return [d.content for d in decisions]
