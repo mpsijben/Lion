@@ -1,9 +1,11 @@
 """Provider registry."""
 
 from .claude import ClaudeProvider
+from .gemini import GeminiProvider
 
 PROVIDERS = {
     "claude": ClaudeProvider,
+    "gemini": GeminiProvider,
 }
 
 
