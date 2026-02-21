@@ -546,9 +546,10 @@ class TestNeedsRefinement:
 class TestFeedbackLoop:
     """Tests for the <-> feedback loop mechanism."""
 
-    def test_feedback_triggers_producer_rerun(self, temp_run_dir, sample_config):
-        """Test that <-> step with issues triggers a producer re-run."""
+    def test_feedback_triggers_producer_rerun_and_reverify(self, temp_run_dir, sample_config):
+        """Test that <-> step with issues triggers producer re-run + re-verification."""
         call_order = []
+        review_call_count = [0]
 
         def mock_pride(*args, **kwargs):
             call_order.append("pride")
@@ -564,15 +565,29 @@ class TestFeedbackLoop:
 
         def mock_review(*args, **kwargs):
             call_order.append("review")
-            return {
-                "success": True,
-                "tokens_used": 50,
-                "files_changed": [],
-                "content": "Found critical SQL injection vulnerability",
-                "issues": [{"severity": "critical", "title": "SQL injection"}],
-                "critical_count": 1,
-                "warning_count": 0,
-            }
+            review_call_count[0] += 1
+            if review_call_count[0] == 1:
+                # First review: finds issues
+                return {
+                    "success": True,
+                    "tokens_used": 50,
+                    "files_changed": [],
+                    "content": "Found critical SQL injection vulnerability",
+                    "issues": [{"severity": "critical", "title": "SQL injection"}],
+                    "critical_count": 1,
+                    "warning_count": 0,
+                }
+            else:
+                # Re-verification: no more issues
+                return {
+                    "success": True,
+                    "tokens_used": 50,
+                    "files_changed": [],
+                    "content": "Code looks good now",
+                    "issues": [],
+                    "critical_count": 0,
+                    "warning_count": 0,
+                }
 
         with patch("lion.pipeline.FUNCTIONS", {"pride": mock_pride, "review": mock_review}):
             with patch("lion.pipeline.Display"):
@@ -589,8 +604,116 @@ class TestFeedbackLoop:
 
                 result = executor.run()
 
-        # pride should be called twice: initial + feedback re-run
-        assert call_order == ["pride", "review", "pride"]
+        # pride runs, review finds issues, pride re-runs, review re-verifies
+        assert call_order == ["pride", "review", "pride", "review"]
+
+    def test_feedback_converges_after_two_rounds(self, temp_run_dir, sample_config):
+        """Test that feedback loop converges when re-verification passes."""
+        call_order = []
+        review_call_count = [0]
+
+        def mock_pride(*args, **kwargs):
+            call_order.append("pride")
+            return {
+                "success": True,
+                "tokens_used": 100,
+                "files_changed": [],
+                "code": "code",
+                "deliberation_summary": "summary",
+            }
+
+        def mock_review(*args, **kwargs):
+            call_order.append("review")
+            review_call_count[0] += 1
+            if review_call_count[0] <= 2:
+                # First two reviews: find issues
+                return {
+                    "success": True,
+                    "tokens_used": 50,
+                    "files_changed": [],
+                    "content": "Found warning",
+                    "issues": [{"severity": "warning", "title": "Style issue"}],
+                    "critical_count": 0,
+                    "warning_count": 1,
+                }
+            else:
+                # Third review (re-verify round 2): clean
+                return {
+                    "success": True,
+                    "tokens_used": 50,
+                    "files_changed": [],
+                    "content": "All clean",
+                    "issues": [],
+                    "critical_count": 0,
+                    "warning_count": 0,
+                }
+
+        with patch("lion.pipeline.FUNCTIONS", {"pride": mock_pride, "review": mock_review}):
+            with patch("lion.pipeline.Display"):
+                executor = PipelineExecutor(
+                    prompt="Build feature",
+                    steps=[
+                        PipelineStep(function="pride", args=[3]),
+                        PipelineStep(function="review", feedback=True),
+                    ],
+                    config=sample_config,
+                    run_dir=temp_run_dir,
+                    cwd="/tmp",
+                )
+
+                result = executor.run()
+
+        # Round 1: review->pride->review (still issues)
+        # Round 2: pride->review (clean)
+        assert call_order == ["pride", "review", "pride", "review", "pride", "review"]
+
+    def test_feedback_max_rounds_exhausted(self, temp_run_dir, sample_config):
+        """Test that feedback loop stops after MAX_FEEDBACK_ROUNDS even if issues remain."""
+        call_order = []
+
+        def mock_pride(*args, **kwargs):
+            call_order.append("pride")
+            return {
+                "success": True,
+                "tokens_used": 100,
+                "files_changed": [],
+                "code": "code",
+                "deliberation_summary": "summary",
+            }
+
+        def mock_review(*args, **kwargs):
+            # Always finds issues (never converges)
+            call_order.append("review")
+            return {
+                "success": True,
+                "tokens_used": 50,
+                "files_changed": [],
+                "content": "Still has issues",
+                "issues": [{"severity": "critical", "title": "Persistent bug"}],
+                "critical_count": 1,
+                "warning_count": 0,
+            }
+
+        with patch("lion.pipeline.FUNCTIONS", {"pride": mock_pride, "review": mock_review}):
+            with patch("lion.pipeline.Display"):
+                executor = PipelineExecutor(
+                    prompt="Build feature",
+                    steps=[
+                        PipelineStep(function="pride", args=[3]),
+                        PipelineStep(function="review", feedback=True),
+                    ],
+                    config=sample_config,
+                    run_dir=temp_run_dir,
+                    cwd="/tmp",
+                )
+
+                result = executor.run()
+
+        # Initial: pride, review
+        # Round 1: pride, review (still issues)
+        # Round 2: pride, review (still issues, max reached)
+        assert call_order == ["pride", "review", "pride", "review", "pride", "review"]
+        assert result.success is True  # Pipeline continues despite unresolved issues
 
     def test_feedback_skipped_when_no_issues(self, temp_run_dir, sample_config):
         """Test that <-> step with no issues skips the re-run."""
@@ -639,6 +762,7 @@ class TestFeedbackLoop:
     def test_feedback_uses_custom_agent_count(self, temp_run_dir, sample_config):
         """Test that <N-> passes the correct agent count to re-run."""
         rerun_args = []
+        review_call_count = [0]
 
         def mock_pride(*args, **kwargs):
             step = kwargs.get("step")
@@ -652,15 +776,27 @@ class TestFeedbackLoop:
             }
 
         def mock_review(*args, **kwargs):
-            return {
-                "success": True,
-                "tokens_used": 50,
-                "files_changed": [],
-                "content": "Found warning",
-                "issues": [{"severity": "warning", "title": "Perf issue"}],
-                "critical_count": 0,
-                "warning_count": 1,
-            }
+            review_call_count[0] += 1
+            if review_call_count[0] == 1:
+                return {
+                    "success": True,
+                    "tokens_used": 50,
+                    "files_changed": [],
+                    "content": "Found warning",
+                    "issues": [{"severity": "warning", "title": "Perf issue"}],
+                    "critical_count": 0,
+                    "warning_count": 1,
+                }
+            else:
+                return {
+                    "success": True,
+                    "tokens_used": 50,
+                    "files_changed": [],
+                    "content": "Clean",
+                    "issues": [],
+                    "critical_count": 0,
+                    "warning_count": 0,
+                }
 
         with patch("lion.pipeline.FUNCTIONS", {"pride": mock_pride, "review": mock_review}):
             with patch("lion.pipeline.Display"):
@@ -689,6 +825,7 @@ class TestFeedbackLoop:
     ):
         """Test that <-> (no N) uses the original agent count."""
         rerun_args = []
+        review_call_count = [0]
 
         def mock_pride(*args, **kwargs):
             step = kwargs.get("step")
@@ -702,15 +839,27 @@ class TestFeedbackLoop:
             }
 
         def mock_review(*args, **kwargs):
-            return {
-                "success": True,
-                "tokens_used": 50,
-                "files_changed": [],
-                "content": "Found issue",
-                "issues": [{"severity": "critical", "title": "Bug"}],
-                "critical_count": 1,
-                "warning_count": 0,
-            }
+            review_call_count[0] += 1
+            if review_call_count[0] == 1:
+                return {
+                    "success": True,
+                    "tokens_used": 50,
+                    "files_changed": [],
+                    "content": "Found issue",
+                    "issues": [{"severity": "critical", "title": "Bug"}],
+                    "critical_count": 1,
+                    "warning_count": 0,
+                }
+            else:
+                return {
+                    "success": True,
+                    "tokens_used": 50,
+                    "files_changed": [],
+                    "content": "Fixed",
+                    "issues": [],
+                    "critical_count": 0,
+                    "warning_count": 0,
+                }
 
         with patch("lion.pipeline.FUNCTIONS", {"pride": mock_pride, "review": mock_review}):
             with patch("lion.pipeline.Display"):
@@ -813,4 +962,69 @@ class TestFeedbackLoop:
 
         # review runs but no re-run happens (no producer to go back to)
         assert call_order == ["review"]
+        assert result.success is True
+
+    def test_feedback_loop_continues_pipeline_after(self, temp_run_dir, sample_config):
+        """Test that pipeline continues to next steps after feedback loop completes."""
+        call_order = []
+        review_call_count = [0]
+
+        def mock_pride(*args, **kwargs):
+            call_order.append("pride")
+            return {
+                "success": True,
+                "tokens_used": 100,
+                "files_changed": [],
+                "code": "code",
+                "deliberation_summary": "summary",
+            }
+
+        def mock_review(*args, **kwargs):
+            call_order.append("review")
+            review_call_count[0] += 1
+            if review_call_count[0] == 1:
+                return {
+                    "success": True,
+                    "tokens_used": 50,
+                    "files_changed": [],
+                    "content": "Issue found",
+                    "issues": [{"severity": "warning", "title": "Style"}],
+                    "critical_count": 0,
+                    "warning_count": 1,
+                }
+            else:
+                return {
+                    "success": True,
+                    "tokens_used": 50,
+                    "files_changed": [],
+                    "content": "Clean",
+                    "issues": [],
+                    "critical_count": 0,
+                    "warning_count": 0,
+                }
+
+        def mock_test(*args, **kwargs):
+            call_order.append("test")
+            return {"success": True, "tokens_used": 30, "files_changed": []}
+
+        with patch("lion.pipeline.FUNCTIONS", {
+            "pride": mock_pride, "review": mock_review, "test": mock_test,
+        }):
+            with patch("lion.pipeline.Display"):
+                executor = PipelineExecutor(
+                    prompt="Build",
+                    steps=[
+                        PipelineStep(function="pride", args=[3]),
+                        PipelineStep(function="review", feedback=True),
+                        PipelineStep(function="test"),
+                    ],
+                    config=sample_config,
+                    run_dir=temp_run_dir,
+                    cwd="/tmp",
+                )
+
+                result = executor.run()
+
+        # Feedback loop, then test runs after
+        assert call_order == ["pride", "review", "pride", "review", "test"]
         assert result.success is True

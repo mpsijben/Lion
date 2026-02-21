@@ -12,6 +12,9 @@ from .functions import FUNCTIONS
 # Functions that produce code (call implement(), write files to disk)
 PRODUCER_FUNCTIONS = {"pride", "test"}
 
+# Maximum feedback rounds before moving on (producer re-run + re-verify = 1 round)
+MAX_FEEDBACK_ROUNDS = 2
+
 FEEDBACK_PROMPT = """{prompt}
 
 PREVIOUS DELIBERATION:
@@ -147,21 +150,28 @@ class PipelineExecutor:
                 previous_output = {**previous_output, **step_result}
 
                 # Handle feedback loop: <-> or <N-> operator
+                # Re-runs the producer, then re-verifies with the same feedback
+                # step, up to MAX_FEEDBACK_ROUNDS times.
                 if step.feedback and _needs_refinement(step_result):
                     producer_step, producer_idx = self._find_last_producer(i)
                     if producer_step:
-                        Display.phase(
-                            "refine",
-                            f"Re-running {producer_step.function} with "
-                            f"{step.function} feedback...",
-                        )
-                        refine_result = self._run_feedback_loop(
-                            feedback_step=step,
-                            feedback_result=step_result,
-                            producer_step=producer_step,
-                            previous=previous_output,
-                        )
-                        if refine_result:
+                        feedback_result = step_result
+                        for round_num in range(MAX_FEEDBACK_ROUNDS):
+                            Display.phase(
+                                "refine",
+                                f"Round {round_num + 1}/{MAX_FEEDBACK_ROUNDS}: "
+                                f"Re-running {producer_step.function} with "
+                                f"{step.function} feedback...",
+                            )
+                            refine_result = self._run_feedback_loop(
+                                feedback_step=step,
+                                feedback_result=feedback_result,
+                                producer_step=producer_step,
+                                previous=previous_output,
+                            )
+                            if not refine_result:
+                                break
+
                             self.outputs.append(refine_result)
                             self.total_tokens += refine_result.get("tokens_used", 0)
                             self.files_changed.extend(
@@ -172,6 +182,42 @@ class PipelineExecutor:
                             if refine_result.get("final_decision"):
                                 self.final_decision = refine_result["final_decision"]
                             previous_output = {**previous_output, **refine_result}
+
+                            # Re-verify: run the feedback step again
+                            Display.phase(
+                                "refine",
+                                f"Round {round_num + 1}/{MAX_FEEDBACK_ROUNDS}: "
+                                f"Re-verifying with {step.function}...",
+                            )
+                            verify_result = func(
+                                prompt=self.prompt,
+                                previous=previous_output,
+                                step=step,
+                                memory=self.memory,
+                                config=self.config,
+                                cwd=self.cwd,
+                                cost_manager=self.cost_manager,
+                            )
+                            self.outputs.append(verify_result)
+                            self.total_tokens += verify_result.get("tokens_used", 0)
+                            previous_output = {**previous_output, **verify_result}
+
+                            # If no more issues, break out of the loop
+                            if not _needs_refinement(verify_result):
+                                Display.notify(
+                                    f"{step.function} passed after "
+                                    f"{round_num + 1} round(s)"
+                                )
+                                break
+
+                            feedback_result = verify_result
+
+                        else:
+                            # Exhausted all rounds without passing
+                            Display.notify(
+                                f"Max feedback rounds ({MAX_FEEDBACK_ROUNDS}) "
+                                f"reached, continuing pipeline"
+                            )
 
                 Display.step_complete(step.function, step_result)
 
