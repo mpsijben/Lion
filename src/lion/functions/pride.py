@@ -20,6 +20,8 @@ from dataclasses import asdict
 from ..memory import SharedMemory, MemoryEntry
 from ..providers import get_provider
 from ..display import Display
+from ..lenses import get_lens, Lens
+from ..lenses.auto_assign import auto_assign_lenses
 from ..context import (
     ContextMode,
     ContextPackage,
@@ -77,7 +79,7 @@ If the PLAN seems incomplete, use the DELIBERATION CONTEXT for guidance."""
 def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None):
     """Execute a pride deliberation."""
 
-    agents = _resolve_agents(step, config)
+    agents, agent_lenses = _resolve_agents(step, config, prompt)
     n_agents = len(agents)
 
     # Determine context mode
@@ -92,7 +94,16 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
     # Track agent summaries for final output
     agent_summaries = []
 
-    Display.pride_start(n_agents, [a.name for a in agents])
+    # Build display names including lenses
+    display_names = []
+    for i, agent in enumerate(agents):
+        lens = agent_lenses[i] if i < len(agent_lenses) else None
+        if lens:
+            display_names.append(f"{agent.name}::{lens.shortcode}")
+        else:
+            display_names.append(agent.name)
+
+    Display.pride_start(n_agents, display_names)
 
     # Get shared context if available
     shared_context = _get_shared_context(memory)
@@ -100,7 +111,7 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
     # PHASE 1: PROPOSE (parallel)
     Display.phase("propose", "Each agent proposes independently...")
     proposals, packages = _parallel_propose(
-        agents, prompt, cwd, memory, context_mode, shared_context
+        agents, prompt, cwd, memory, context_mode, shared_context, agent_lenses
     )
 
     if not proposals:
@@ -116,23 +127,30 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
     # Extract 1-liner summaries from proposals
     for proposal in proposals:
         summary = _extract_one_liner(proposal["content"])
+        lens = proposal.get("lens")
         agent_summaries.append({
             "agent": proposal["agent"],
             "model": proposal["model"],
             "summary": summary,
             "confidence": proposal.get("confidence"),
+            "lens": lens.shortcode if lens else None,
+            "lens_name": lens.name if lens else None,
         })
 
     # PHASE 2: CRITIQUE (parallel, skip if only 1 agent)
     if n_agents > 1:
         Display.phase("critique", "Agents review each other's proposals...")
         _parallel_critique(
-            agents, prompt, proposals, packages, cwd, memory, context_mode
+            agents, prompt, proposals, packages, cwd, memory, context_mode,
+            agent_lenses
         )
 
     # PHASE 3: CONVERGE (single agent)
     Display.phase("converge", "Synthesizing into final plan...")
-    plan, confidence_map = _converge(agents[0], prompt, memory, cwd, packages, context_mode)
+    plan, confidence_map = _converge(
+        agents[0], prompt, memory, cwd, packages, context_mode,
+        agent_lenses, proposals
+    )
 
     # Extract the decision from the converged plan
     final_decision = _extract_decision_summary(plan)
@@ -156,21 +174,57 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
     }
 
 
-def _resolve_agents(step, config):
-    """Determine which providers to use for the pride."""
+def _resolve_agents(step, config, prompt=""):
+    """Determine which providers and lenses to use for the pride.
+
+    Returns (agents, lenses) where lenses is a list of Lens|None per agent.
+    """
     default_provider = config.get("providers", {}).get("default", "claude")
+    lenses_kwarg = step.kwargs.get("lenses")
 
     if step.args:
         first_arg = step.args[0]
-        # Explicit providers: pride(claude, gemini)
+        # Explicit providers (with optional lens): pride(claude::arch, gemini::sec)
         if isinstance(first_arg, str) and not str(first_arg).isdigit():
-            return [get_provider(name, config) for name in step.args]
+            agents = []
+            agent_lenses = []
+            for arg in step.args:
+                if isinstance(arg, str) and "::" in arg:
+                    provider_str, lens_str = arg.split("::", 1)
+                    agents.append(get_provider(provider_str.strip(), config))
+                    lens = get_lens(lens_str.strip())
+                    agent_lenses.append(lens)
+                else:
+                    agents.append(get_provider(str(arg), config))
+                    agent_lenses.append(None)
+
+            return agents, agent_lenses
+
         # Number of agents: pride(3)
         n = int(first_arg)
         n = max(1, min(n, 5))  # Clamp between 1 and 5
-        return [get_provider(default_provider, config) for _ in range(n)]
+        agents = [get_provider(default_provider, config) for _ in range(n)]
+
+        # Handle lenses: auto
+        if lenses_kwarg == "auto":
+            lens_codes = auto_assign_lenses(prompt, n)
+            agent_lenses = [get_lens(code) for code in lens_codes]
+        else:
+            agent_lenses = [None] * n
+
+        return agents, agent_lenses
+
     # Default: 3 agents with default provider
-    return [get_provider(default_provider, config) for _ in range(3)]
+    n = 3
+    agents = [get_provider(default_provider, config) for _ in range(n)]
+
+    if lenses_kwarg == "auto":
+        lens_codes = auto_assign_lenses(prompt, n)
+        agent_lenses = [get_lens(code) for code in lens_codes]
+    else:
+        agent_lenses = [None] * n
+
+    return agents, agent_lenses
 
 
 def _get_shared_context(memory) -> str:
@@ -186,10 +240,124 @@ def _get_shared_context(memory) -> str:
     return ""
 
 
-def _parallel_propose(agents, prompt, cwd, memory, context_mode, shared_context=""):
+def _build_lensed_propose(prompt, agent_num, total_agents, lens, cwd, shared_context=""):
+    """Build a propose prompt with lens focus injected."""
+    parts = [f"You are Agent {agent_num} of {total_agents} analyzing:\n\nTASK: {prompt}\n"]
+
+    if shared_context:
+        parts.append(f"CODEBASE CONTEXT:\n{shared_context}\n")
+
+    parts.append(f"""
+{lens.prompt_inject}
+
+Other agents are analyzing from different angles.
+You do NOT need to cover everything -- go DEEP on your area.
+
+IMPORTANT: Start DIRECTLY with "## Analysis". No preamble, no "I understand", no "Let me analyze". Begin immediately with the structured output.
+
+Structure your response:
+
+## Analysis ({lens.name} perspective)
+[Your focused analysis and recommendations]
+
+## Key Findings
+- [Most important finding from your perspective]
+- [Other significant findings]
+
+## Warnings
+- [Things that MUST be addressed from your perspective]
+
+## Confidence
+[0.0-1.0]
+""")
+
+    return "\n".join(parts)
+
+
+def _build_lensed_critique(prompt, agent_num, own_lens, own_proposal, other_proposals):
+    """Build a critique prompt scoped to the agent's own lens."""
+    parts = [f"""You are Agent {agent_num} with the {own_lens.name} lens.
+
+TASK: {prompt}
+
+YOUR ANALYSIS ({own_lens.name}):
+{own_proposal}
+
+OTHER AGENTS' ANALYSES:
+"""]
+
+    for other in other_proposals:
+        lens_label = f" ({other['lens_name']} perspective)" if other.get('lens_name') else ""
+        parts.append(f"""
+--- Agent {other['num']}{lens_label} ---
+{other['output']}
+""")
+
+    parts.append(f"""
+{own_lens.critique_inject}
+
+Specifically:
+1. What implications do their proposals have for {own_lens.name.lower()}?
+2. Do any of their approaches conflict with your findings?
+3. What constraints from YOUR analysis must their approaches satisfy?
+
+Stay in your lane. Do not critique aspects outside your lens.
+Start DIRECTLY with your analysis -- no preamble.""")
+
+    return "\n".join(parts)
+
+
+def _build_lensed_converge(prompt, proposals, deliberation_text):
+    """Build a converge prompt that handles labeled lens perspectives."""
+    parts = [f"""Synthesize these focused analyses into a final plan.
+
+IMPORTANT: You are creating a TEXT PLAN only. Do NOT ask for file permissions.
+Do NOT try to write, create, or modify any files. Just output your plan as text.
+
+TASK: {prompt}
+
+ANALYSES FROM DIFFERENT PERSPECTIVES:
+"""]
+
+    for p in proposals:
+        lens = p.get("lens")
+        lens_label = f" ({lens.name} perspective)" if lens else ""
+        confidence = p.get("confidence", "N/A")
+        parts.append(f"""
+=== {lens.name.upper() if lens else 'GENERAL'} PERSPECTIVE (Agent {p['agent']}, {p['model']}) ===
+Confidence: {confidence}
+
+{p['content'][:3000]}
+""")
+
+    parts.append(f"""
+FULL DELIBERATION (proposals + critiques):
+{deliberation_text}
+
+Create the FINAL PLAN that:
+1. Satisfies ALL high-confidence warnings as hard requirements
+2. Integrates insights from every perspective
+3. Where perspectives conflict, explain which takes priority and why
+4. Marks each decision with the perspective(s) that support it
+
+Format:
+DECISION: [summary of approach and key choices]
+  Supported by: [lens names / agent numbers]
+
+TASKS:
+1. [task description] | files: [file paths]
+2. [task description] | files: [file paths] | depends_on: [1]
+...""")
+
+    return "\n".join(parts)
+
+
+def _parallel_propose(agents, prompt, cwd, memory, context_mode, shared_context="",
+                      agent_lenses=None):
     """Run propose phase in parallel with mode-aware prompts."""
     proposals = []
     packages = []
+    agent_lenses = agent_lenses or [None] * len(agents)
 
     # Select prompt template based on mode
     if context_mode == ContextMode.RICH:
@@ -202,13 +370,21 @@ def _parallel_propose(agents, prompt, cwd, memory, context_mode, shared_context=
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(agents)) as executor:
         futures = {}
         for i, agent in enumerate(agents):
-            agent_prompt = prompt_template.format(
-                agent_num=i + 1,
-                total_agents=len(agents),
-                prompt=prompt,
-                cwd=cwd,
-                shared_context=shared_context,
-            )
+            lens = agent_lenses[i] if i < len(agent_lenses) else None
+
+            if lens:
+                # Lensed propose: inject lens focus
+                agent_prompt = _build_lensed_propose(
+                    prompt, i + 1, len(agents), lens, cwd, shared_context
+                )
+            else:
+                agent_prompt = prompt_template.format(
+                    agent_num=i + 1,
+                    total_agents=len(agents),
+                    prompt=prompt,
+                    cwd=cwd,
+                    shared_context=shared_context,
+                )
             futures[executor.submit(agent.ask, agent_prompt, "", cwd)] = (i, agent)
 
         for future in concurrent.futures.as_completed(futures):
@@ -232,6 +408,8 @@ def _parallel_propose(agents, prompt, cwd, memory, context_mode, shared_context=
             )
             packages.append(package)
 
+            lens = agent_lenses[i] if i < len(agent_lenses) else None
+
             proposals.append({
                 "agent": f"agent_{i + 1}",
                 "content": result.content,
@@ -239,6 +417,7 @@ def _parallel_propose(agents, prompt, cwd, memory, context_mode, shared_context=
                 "tokens": result.tokens_used,
                 "confidence": package.confidence,
                 "package": package,
+                "lens": lens,
             })
 
             # Write to memory with context fields
@@ -251,6 +430,7 @@ def _parallel_propose(agents, prompt, cwd, memory, context_mode, shared_context=
                 metadata={
                     "model": result.model,
                     "context_mode": context_mode.value,
+                    "lens": lens.shortcode if lens else None,
                 },
                 reasoning=package.reasoning,
                 alternatives=package.alternatives,
@@ -259,25 +439,45 @@ def _parallel_propose(agents, prompt, cwd, memory, context_mode, shared_context=
                 belief_state=asdict(package.belief_state) if package.belief_state else None,
             ))
 
-            Display.agent_proposal(i + 1, result.model, result.content[:150])
+            Display.agent_proposal(i + 1, result.model, result.content[:150], lens)
 
     return proposals, packages
 
 
-def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context_mode):
+def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context_mode,
+                       agent_lenses=None):
     """Run critique phase in parallel with context awareness."""
     critiques = []
     adapter = ContextAdapter()
+    agent_lenses = agent_lenses or [None] * len(agents)
+    any_lensed = any(l is not None for l in agent_lenses)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(agents)) as executor:
         futures = {}
         for i, agent in enumerate(agents):
+            lens = agent_lenses[i] if i < len(agent_lenses) else None
+
             # Find this agent's proposal and package
             own = next((p for p in proposals if p["agent"] == f"agent_{i + 1}"), None)
             own_content = own["content"] if own else "(no proposal)"
             own_pkg = own.get("package") if own else None
 
-            if context_mode == ContextMode.MINIMAL:
+            if any_lensed and lens:
+                # Lensed critique: scoped to own lens
+                other_formatted = []
+                for p in proposals:
+                    if p["agent"] == f"agent_{i + 1}":
+                        continue
+                    p_lens = p.get("lens")
+                    other_formatted.append({
+                        "num": p["agent"].replace("agent_", ""),
+                        "lens_name": p_lens.name if p_lens else "General",
+                        "output": p["content"],
+                    })
+                critique_prompt = _build_lensed_critique(
+                    prompt, i + 1, lens, own_content, other_formatted
+                )
+            elif context_mode == ContextMode.MINIMAL:
                 # Minimal mode: use original critique format
                 other_proposals = "\n\n".join(
                     f"Agent {j + 1} ({p['model']}): {p['content']}"
@@ -348,6 +548,7 @@ def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context
 
         for future in concurrent.futures.as_completed(futures):
             i = futures[future]
+            lens = agent_lenses[i] if i < len(agent_lenses) else None
             try:
                 result = future.result()
             except Exception as e:
@@ -361,6 +562,7 @@ def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context
                 "agent": f"agent_{i + 1}",
                 "content": result.content,
                 "model": result.model,
+                "lens": lens,
             })
 
             memory.write(MemoryEntry(
@@ -372,16 +574,21 @@ def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context
                 metadata={
                     "model": result.model,
                     "context_mode": context_mode.value,
+                    "lens": lens.shortcode if lens else None,
                 },
             ))
 
-            Display.agent_critique(i + 1, result.content[:150])
+            Display.agent_critique(i + 1, result.content[:150], lens)
 
     return critiques
 
 
-def _converge(lead_agent, prompt, memory, cwd, packages, context_mode):
+def _converge(lead_agent, prompt, memory, cwd, packages, context_mode,
+              agent_lenses=None, proposals=None):
     """Synthesize all proposals and critiques into a plan with confidence weighting."""
+    agent_lenses = agent_lenses or []
+    any_lensed = any(l is not None for l in agent_lenses)
+
     all_entries = memory.read_all()
     deliberation_text = memory.format_for_prompt(all_entries)
 
@@ -404,8 +611,10 @@ def _converge(lead_agent, prompt, memory, cwd, packages, context_mode):
 
         confidence_map_text = "\n".join(conf_lines)
 
-    # Select converge prompt based on mode
-    if context_mode == ContextMode.RICH:
+    # Use lensed converge prompt when lenses are active
+    if any_lensed and proposals:
+        converge_prompt = _build_lensed_converge(prompt, proposals, deliberation_text)
+    elif context_mode == ContextMode.RICH:
         # Build assumption conflicts and belief summary for rich mode
         assumption_conflicts = _find_assumption_conflicts(packages)
         belief_summary = _build_belief_summary(packages)

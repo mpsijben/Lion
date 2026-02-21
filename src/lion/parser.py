@@ -15,6 +15,12 @@ Examples:
 
     "Build X" -> pride(5) <1-> review()
         -> feedback=True, feedback_agents=1 on review step (re-run producer with 1 agent)
+
+    "Build X" -> pride(claude::arch, gemini::sec)
+        -> Lens syntax: provider::lens stored as "provider::lens" string in args
+
+    "Build X" -> pride(3, lenses: auto)
+        -> Auto-assign lenses based on task content
 """
 
 import re
@@ -140,7 +146,13 @@ def _parse_step(step_str: str, config: dict) -> PipelineStep:
 
     for arg in _split_args(args_str):
         arg = arg.strip()
-        if ":" in arg and not arg.startswith('"'):
+        # IMPORTANT: Check for :: (lens syntax) BEFORE checking for single : (kwargs)
+        # This ensures "claude::arch" is treated as a lens-provider pair, not a kwarg
+        if "::" in arg:
+            # Lens syntax: provider::lens - store as string for downstream processing
+            args.append(arg)
+        elif ":" in arg and not arg.startswith('"'):
+            # Kwarg syntax: key: value
             key, value = arg.split(":", 1)
             kwargs[key.strip()] = _parse_value(value.strip())
         else:
@@ -196,3 +208,38 @@ def _parse_value(value: str) -> Any:
 
     # String (provider name, branch name, etc.)
     return value
+
+
+def parse_lens_arg(arg: str) -> tuple[str, str | None]:
+    """Parse a potential lens argument into (provider, lens) tuple.
+
+    Args:
+        arg: An argument string, possibly containing :: lens syntax
+
+    Returns:
+        Tuple of (provider, lens) where lens is None if no :: present
+
+    Examples:
+        >>> parse_lens_arg("claude::arch")
+        ("claude", "arch")
+        >>> parse_lens_arg("claude")
+        ("claude", None)
+        >>> parse_lens_arg("gemini::security")
+        ("gemini", "security")
+    """
+    if isinstance(arg, str) and "::" in arg:
+        parts = arg.split("::", 1)
+        return (parts[0].strip(), parts[1].strip())
+    return (str(arg), None)
+
+
+def has_lens_syntax(args: list) -> bool:
+    """Check if any argument contains lens syntax (::).
+
+    Args:
+        args: List of parsed arguments
+
+    Returns:
+        True if any argument contains ::
+    """
+    return any(isinstance(arg, str) and "::" in arg for arg in args)

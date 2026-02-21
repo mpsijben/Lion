@@ -128,14 +128,16 @@ class Display:
         _print(f"\n   {icon} {BOLD}{name.upper()}{RESET}: {description}")
 
     @staticmethod
-    def agent_proposal(num, model, preview):
+    def agent_proposal(num, model, preview, lens=None):
         preview_clean = _skip_preamble(preview).replace("\n", " ")[:150]
-        _print(f"   +-- Agent {num} ({model}): {DIM}{preview_clean}...{RESET}")
+        lens_label = f"::{lens.shortcode}" if lens else ""
+        _print(f"   +-- Agent {num} ({model}{lens_label}): {DIM}{preview_clean}...{RESET}")
 
     @staticmethod
-    def agent_critique(num, preview):
+    def agent_critique(num, preview, lens=None):
         preview_clean = _skip_preamble(preview).replace("\n", " ")[:150]
-        _print(f"   |-- Agent {num} critique: {DIM}{preview_clean}...{RESET}")
+        lens_label = f" [{lens.name}]" if lens else ""
+        _print(f"   |-- Agent {num}{lens_label} critique: {DIM}{preview_clean}...{RESET}")
 
     @staticmethod
     def convergence(preview):
@@ -208,8 +210,16 @@ class Display:
             _print(f"\n   {BOLD}Agents:{RESET}")
             for a in result.agent_summaries:
                 name = a.get("agent", "?").replace("agent_", "Agent ")
+                lens = a.get("lens")
+                lens_name = a.get("lens_name")
+                if lens and lens_name:
+                    lens_label = f" {CYAN}[{lens}: {lens_name}]{RESET}"
+                elif lens:
+                    lens_label = f" {CYAN}[{lens}]{RESET}"
+                else:
+                    lens_label = ""
                 summary = a.get("summary", "")
-                _print(f"   - {name}: {DIM}{summary}{RESET}")
+                _print(f"   - {name}{lens_label}: {DIM}{summary}{RESET}")
 
         # Show the decision
         if result.final_decision:
