@@ -18,9 +18,10 @@ import time
 from ..memory import MemoryEntry
 from ..providers import get_provider, is_provider_name
 from ..display import Display
+from ..toon import encode as toon_encode
 
 
-DECOMPOSE_PROMPT = """You are a software architect. Break down this task into concrete, implementable subtasks.
+DECOMPOSE_PROMPT = """Break down this task into concrete, implementable subtasks.
 
 TASK: {prompt}
 
@@ -33,7 +34,9 @@ RULES:
 4. Maximum {max_tasks} subtasks
 5. Be specific - include file paths, function names, etc.
 
-OUTPUT FORMAT (strict - follow exactly):
+IMPORTANT: Start DIRECTLY with "SUBTASK 1:". No preamble, no introduction, no analysis.
+Follow this EXACT format for each subtask:
+
 SUBTASK 1: [short title]
 DESCRIPTION: [1-3 sentences describing exactly what to build/change]
 FILES: [comma-separated list of files to create/modify]
@@ -114,13 +117,22 @@ def execute_task(prompt, previous, step, memory, config, cwd, cost_manager=None)
             "tokens_used": result.tokens_used,
         }
 
-    # Log to memory
+    # Log to memory with TOON-encoded subtask summary
+    subtask_summary = toon_encode({"subtasks": [
+        {
+            "title": t["title"],
+            "files": ",".join(t.get("files", [])),
+            "depends_on": ",".join(str(d) for d in t.get("depends_on", [])) or "none",
+            "parallel": t.get("parallel", False),
+        }
+        for t in subtasks
+    ]})
     memory.write(MemoryEntry(
         timestamp=time.time(),
         phase="task",
         agent="decomposer",
         type="subtasks",
-        content=result.content,
+        content=subtask_summary,
         metadata={
             "model": result.model,
             "subtask_count": len(subtasks),
@@ -150,13 +162,14 @@ def execute_task(prompt, previous, step, memory, config, cwd, cost_manager=None)
 def _parse_subtasks(content, max_tasks):
     """Parse subtasks from AI output.
 
-    Expected format:
-    SUBTASK 1: title
-    DESCRIPTION: ...
-    FILES: ...
-    DEPENDS_ON: ...
-    PARALLEL: ...
+    Handles multiple formats:
+    - SUBTASK 1: title
+    - ### Subtask 1: title
+    - ## 1. title
+    - 1. **title**
     """
+    import re
+
     subtasks = []
     current = None
 
@@ -167,14 +180,13 @@ def _parse_subtasks(content, max_tasks):
 
         upper = line.upper()
 
-        # New subtask header
-        if upper.startswith("SUBTASK ") and ":" in line:
+        # Check for subtask header in various formats
+        title = _match_subtask_header(line, upper)
+        if title is not None:
             if current:
                 subtasks.append(current)
                 if len(subtasks) >= max_tasks:
                     break
-            # Extract title after "SUBTASK N:"
-            title = line.split(":", 1)[1].strip() if ":" in line else ""
             current = {
                 "title": title,
                 "description": "",
@@ -200,9 +212,48 @@ def _parse_subtasks(content, max_tasks):
             elif upper.startswith("PARALLEL:"):
                 val = line.split(":", 1)[1].strip().lower()
                 current["parallel"] = val in ("yes", "true", "ja")
+            elif not current["description"] and not upper.startswith(("FILES:", "DEPENDS", "PARALLEL:")):
+                # If no description yet, and this isn't a field line, treat as description
+                current["description"] = line.strip("- *")
 
     # Don't forget the last subtask
     if current and len(subtasks) < max_tasks:
         subtasks.append(current)
 
     return subtasks
+
+
+def _match_subtask_header(line, upper):
+    """Try to match a subtask header in various formats. Returns title or None."""
+    import re
+
+    # Format: SUBTASK 1: title
+    if upper.startswith("SUBTASK ") and ":" in line:
+        return line.split(":", 1)[1].strip()
+
+    # Format: ### SUBTASK 1: title  or  ## Subtask 1: title
+    stripped = upper.lstrip("#").strip()
+    m = re.match(r'^SUBTASK\s+\d+\s*:', stripped)
+    if m:
+        return line.split(":", 1)[1].strip()
+
+    # Format: ## 1. title  or  ### 1. title (must start with a number)
+    m = re.match(r'^#{1,4}\s+(\d+)[.)]\s+(.+)', line)
+    if m:
+        return m.group(2).strip().strip("*")
+
+    # Format: **SUBTASK 1:** title  or  **1.** title
+    m = re.match(r'^\*{1,2}SUBTASK\s+\d+[.:]\*{1,2}\s*(.*)', line, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Format: 1. **title**  or  1. title (only at top level, not indented descriptions)
+    m = re.match(r'^(\d+)\.\s+\*{0,2}(.+?)\*{0,2}\s*$', line)
+    if m:
+        title = m.group(2).strip()
+        # Only treat as a subtask header if it looks like a title (short, no field prefix)
+        if len(title) < 100 and not any(title.upper().startswith(p) for p in
+                                         ("DESCRIPTION:", "FILES:", "DEPENDS", "PARALLEL:")):
+            return title
+
+    return None

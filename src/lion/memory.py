@@ -4,7 +4,8 @@ import json
 import os
 import time
 from dataclasses import dataclass, asdict, field
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Union
 
 
 @dataclass
@@ -44,11 +45,39 @@ class MemoryEntry:
 class SharedMemory:
     """JSONL-based shared memory for agent communication."""
 
-    def __init__(self, run_dir: str):
-        self.filepath = os.path.join(run_dir, "memory.jsonl")
-        os.makedirs(run_dir, exist_ok=True)
+    def __init__(self, run_dir: Union[str, Path], read_only: bool = False):
+        self.run_dir = Path(run_dir) if isinstance(run_dir, str) else run_dir
+        self.filepath = str(self.run_dir / "memory.jsonl")
+        self.read_only = read_only
+        if not read_only:
+            os.makedirs(run_dir, exist_ok=True)
+
+    @classmethod
+    def load(cls, run_dir: Union[str, Path]) -> "SharedMemory":
+        """Load existing memory from a completed run (read-only).
+
+        Args:
+            run_dir: Path to the run directory containing memory.jsonl
+
+        Returns:
+            SharedMemory instance in read-only mode
+
+        Raises:
+            FileNotFoundError: If run directory or memory.jsonl doesn't exist
+        """
+        run_path = Path(run_dir) if isinstance(run_dir, str) else run_dir
+        memory_file = run_path / "memory.jsonl"
+
+        if not run_path.exists():
+            raise FileNotFoundError(f"Run directory not found: {run_path}")
+        if not memory_file.exists():
+            raise FileNotFoundError(f"Memory file not found: {memory_file}")
+
+        return cls(run_dir, read_only=True)
 
     def write(self, entry: MemoryEntry):
+        if self.read_only:
+            raise RuntimeError("Cannot write to read-only SharedMemory")
         with open(self.filepath, "a") as f:
             data = asdict(entry)
             f.write(json.dumps(data) + "\n")
@@ -103,3 +132,38 @@ class SharedMemory:
                 prefix += f" -> [{e.target}]"
             lines.append(f"{prefix}: {e.content}")
         return "\n\n".join(lines)
+
+    def read_by_agent(self, agent: str) -> list[MemoryEntry]:
+        """Get all entries from a specific agent."""
+        return [e for e in self.read_all() if e.agent == agent]
+
+    def get_agents(self) -> list[str]:
+        """Get unique agent identifiers in this memory."""
+        agents = []
+        seen = set()
+        for entry in self.read_all():
+            if entry.agent and entry.agent not in seen:
+                agents.append(entry.agent)
+                seen.add(entry.agent)
+        return agents
+
+    def get_phases(self) -> list[str]:
+        """Get unique phases in this memory in order of occurrence."""
+        phases = []
+        seen = set()
+        for entry in self.read_all():
+            if entry.phase and entry.phase not in seen:
+                phases.append(entry.phase)
+                seen.add(entry.phase)
+        return phases
+
+    def get_entry_by_index(self, index: int) -> Optional[MemoryEntry]:
+        """Get a specific entry by its 0-based index."""
+        entries = self.read_all()
+        if 0 <= index < len(entries):
+            return entries[index]
+        return None
+
+    def count(self) -> int:
+        """Get the total number of entries."""
+        return len(self.read_all())

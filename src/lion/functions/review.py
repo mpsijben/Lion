@@ -8,6 +8,7 @@ import time
 from ..memory import SharedMemory, MemoryEntry
 from ..providers import get_provider
 from ..display import Display
+from ..toon import encode as toon_encode
 
 
 REVIEW_PROMPT = """Review the following code changes for:
@@ -104,13 +105,19 @@ def execute_review(prompt, previous, step, memory, config, cwd, cost_manager=Non
     # Parse issues from response (simple extraction)
     issues = _extract_issues(result.content)
     
-    # Write to shared memory
+    # Write to shared memory with TOON-encoded issues for compact context
+    if issues:
+        issues_toon = toon_encode({"issues": issues})
+        compact_content = f"{issues_toon}\n\nFull review:\n{result.content[:3000]}"
+    else:
+        compact_content = result.content[:3000]
+
     memory.write(MemoryEntry(
         timestamp=time.time(),
         phase="review",
         agent="reviewer",
         type="review",
-        content=result.content,
+        content=compact_content,
         metadata={
             "model": result.model,
             "issues_count": len(issues),

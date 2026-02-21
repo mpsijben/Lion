@@ -405,3 +405,20 @@ class TestEdgeCases:
         prompt, steps = parse_lion_input('"Create PR" -> pr(feature/my-branch)')
         assert prompt == "Create PR"
         assert steps[0].args == ["feature/my-branch"]
+
+    def test_case_insensitive_function_names(self):
+        """Test that function names are normalized to lowercase."""
+        prompt, steps = parse_lion_input('"Test" -> Devil() -> Review()')
+        assert steps[0].function == "devil"
+        assert steps[1].function == "review"
+
+    def test_case_insensitive_with_args(self):
+        """Test case normalization with arguments."""
+        prompt, steps = parse_lion_input('"Test" -> Pride(3, claude)')
+        assert steps[0].function == "pride"
+        assert steps[0].args == [3, "claude"]
+
+    def test_case_insensitive_bare_name(self):
+        """Test case normalization for bare function name without parens."""
+        step = _parse_step("Devil", {})
+        assert step.function == "devil"

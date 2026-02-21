@@ -696,3 +696,152 @@ test_file.py:5: AssertionError
         failures = _extract_failures(output, "pytest")
         # Should return something even if no structured failures found
         assert isinstance(failures, str)
+
+
+class TestSummarizeProposal:
+    """Tests for _summarize_proposal function."""
+
+    def test_summarize_with_structured_sections(self):
+        from lion.functions.pride import _summarize_proposal
+        content = """## Approach
+Use FastAPI with JWT authentication for the backend.
+
+## Key Findings
+- FastAPI is faster than Flask
+- JWT is industry standard
+
+## Warnings
+- Rate limiting needed
+
+## Reasoning
+FastAPI provides async support natively.
+"""
+        result = _summarize_proposal(content)
+        assert "FastAPI" in result
+        assert "Approach:" in result
+        assert "Key Findings:" in result
+        assert "Warnings:" in result
+
+    def test_summarize_without_sections_falls_back(self):
+        from lion.functions.pride import _summarize_proposal
+        content = "Just a raw text proposal without any headers or structure. " * 20
+        result = _summarize_proposal(content, max_chars=100)
+        assert len(result) <= 100
+
+    def test_summarize_respects_max_chars(self):
+        from lion.functions.pride import _summarize_proposal
+        content = """## Approach
+""" + "A" * 2000
+        result = _summarize_proposal(content, max_chars=500)
+        assert len(result) <= 500
+
+    def test_summarize_empty_content(self):
+        from lion.functions.pride import _summarize_proposal
+        result = _summarize_proposal("")
+        assert result == ""
+
+
+class TestBuildConvergeContext:
+    """Tests for _build_converge_context function."""
+
+    def test_basic_converge_context(self):
+        from lion.functions.pride import _build_converge_context
+        proposals = [
+            {
+                "agent": "agent_1",
+                "model": "claude",
+                "content": "## Approach\nUse FastAPI\n\n## Warnings\n- Need auth",
+                "confidence": 0.8,
+                "lens": None,
+            },
+            {
+                "agent": "agent_2",
+                "model": "gemini",
+                "content": "## Approach\nUse Django\n\n## Warnings\n- Complex setup",
+                "confidence": 0.6,
+                "lens": None,
+            },
+        ]
+        critiques = [
+            {"agent": "agent_1", "content": "Agent 2's Django approach is slower"},
+        ]
+
+        result = _build_converge_context(proposals, critiques, [])
+        assert "Agent agent_1" in result
+        assert "Agent agent_2" in result
+        assert "CRITIQUES" in result
+
+    def test_converge_context_respects_max(self):
+        from lion.functions.pride import _build_converge_context
+        proposals = [
+            {
+                "agent": "agent_1",
+                "model": "claude",
+                "content": "A" * 5000,
+                "confidence": 0.8,
+                "lens": None,
+            },
+        ]
+
+        result = _build_converge_context(proposals, [], [], max_chars=500)
+        assert len(result) <= 520  # 500 + "\n... (truncated)"
+
+    def test_converge_context_includes_toon_metadata(self):
+        from lion.functions.pride import _build_converge_context
+        proposals = [
+            {
+                "agent": "agent_1",
+                "model": "claude",
+                "content": "## Approach\nTest",
+                "confidence": 0.8,
+                "lens": None,
+            },
+        ]
+        result = _build_converge_context(proposals, [], [])
+        # Should have TOON-encoded agent metadata
+        assert "agents[" in result
+
+
+class TestBuildImplementContext:
+    """Tests for _build_implement_context function."""
+
+    def test_extracts_decisions_and_warnings(self, temp_run_dir):
+        from lion.functions.pride import _build_implement_context
+        from lion.memory import SharedMemory, MemoryEntry
+
+        memory = SharedMemory(temp_run_dir)
+        memory.write(MemoryEntry(
+            timestamp=1.0,
+            phase="converge",
+            agent="synthesizer",
+            type="decision",
+            content="DECISION: Use FastAPI with PostgreSQL",
+        ))
+        memory.write(MemoryEntry(
+            timestamp=2.0,
+            phase="propose",
+            agent="agent_1",
+            type="proposal",
+            content="## Approach\nUse FastAPI\n\n## Warnings\n- Need rate limiting\n- Add CORS",
+        ))
+
+        result = _build_implement_context(memory)
+        assert "Decision:" in result
+        assert "FastAPI" in result
+        assert "rate limiting" in result
+
+    def test_respects_max_chars(self, temp_run_dir):
+        from lion.functions.pride import _build_implement_context
+        from lion.memory import SharedMemory, MemoryEntry
+
+        memory = SharedMemory(temp_run_dir)
+        memory.write(MemoryEntry(
+            timestamp=1.0,
+            phase="converge",
+            agent="synthesizer",
+            type="decision",
+            content="A" * 10000,
+        ))
+
+        result = _build_implement_context(memory, max_chars=500)
+        assert len(result) <= 500

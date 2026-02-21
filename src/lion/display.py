@@ -9,6 +9,7 @@ YELLOW = "\033[33m"
 RED = "\033[31m"
 BLUE = "\033[34m"
 CYAN = "\033[36m"
+MAGENTA = "\033[35m"
 DIM = "\033[2m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
@@ -179,7 +180,7 @@ class Display:
             for line in preview_lines:
                 _print(f"   {DIM}{line[:120]}{RESET}")
             if len(lines) > 3:
-                _print(f"   {DIM}... ({len(lines) - 3} more lines){RESET}")
+                _print(f"   {DIM}... ({len(lines) - 3} more lines) - use :inspect to view all{RESET}")
 
     @staticmethod
     def step_error(func_name, error):

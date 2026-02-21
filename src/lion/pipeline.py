@@ -173,6 +173,24 @@ class PipelineExecutor:
                 content=content,
             )
 
+        # Validate all function names upfront
+        unknown = [s.function for s in self.steps
+                   if s.function not in FUNCTIONS and s.function != "__pattern__"]
+        if unknown:
+            for name in unknown:
+                Display.step_error(name, f"Unknown function '{name}'")
+            return PipelineResult(
+                success=False,
+                prompt=self.prompt,
+                steps_completed=0,
+                total_steps=len(self.steps),
+                outputs=[],
+                total_duration=time.time() - start_time,
+                total_tokens=0,
+                files_changed=[],
+                errors=[f"Unknown function: {name}" for name in unknown],
+            )
+
         # Execute pipeline steps sequentially
         previous_output = {"prompt": self.prompt, "code": "", "decisions": []}
 
@@ -329,6 +347,17 @@ class PipelineExecutor:
             if self.steps[idx].function in PRODUCER_FUNCTIONS:
                 return self.steps[idx], idx
         return None, -1
+
+    def _find_producer_in_steps(self, steps, current_idx):
+        """Find the last producer step before current_idx in a given step list.
+
+        Used by subtask runner where self.steps is the main pipeline,
+        not the subtask's remaining steps.
+        """
+        for idx in range(current_idx - 1, -1, -1):
+            if steps[idx].function in PRODUCER_FUNCTIONS:
+                return steps[idx]
+        return None
 
     def _run_feedback_loop(self, feedback_step, feedback_result, producer_step,
                            previous):
@@ -525,6 +554,87 @@ class PipelineExecutor:
                     self.final_decision = step_result["final_decision"]
 
                 subtask_previous = {**subtask_previous, **step_result}
+
+                # Handle feedback loop: <-> or <N-> operator
+                if step.feedback and _needs_refinement(step_result):
+                    producer_step = self._find_producer_in_steps(
+                        remaining_steps, j
+                    )
+                    if producer_step:
+                        feedback_result = step_result
+                        for round_num in range(MAX_FEEDBACK_ROUNDS):
+                            Display.phase(
+                                "refine",
+                                f"Round {round_num + 1}/{MAX_FEEDBACK_ROUNDS}: "
+                                f"Re-running {producer_step.function} with "
+                                f"{step.function} feedback...",
+                            )
+                            refine_result = self._run_feedback_loop(
+                                feedback_step=step,
+                                feedback_result=feedback_result,
+                                producer_step=producer_step,
+                                previous=subtask_previous,
+                            )
+                            if not refine_result:
+                                break
+
+                            self.outputs.append(refine_result)
+                            self.total_tokens += refine_result.get(
+                                "tokens_used", 0
+                            )
+                            self.files_changed.extend(
+                                refine_result.get("files_changed", [])
+                            )
+                            if refine_result.get("agent_summaries"):
+                                self.agent_summaries = refine_result[
+                                    "agent_summaries"
+                                ]
+                            if refine_result.get("final_decision"):
+                                self.final_decision = refine_result[
+                                    "final_decision"
+                                ]
+                            subtask_previous = {
+                                **subtask_previous, **refine_result
+                            }
+
+                            # Re-verify with the feedback step
+                            Display.phase(
+                                "refine",
+                                f"Round {round_num + 1}/{MAX_FEEDBACK_ROUNDS}: "
+                                f"Re-verifying with {step.function}...",
+                            )
+                            verify_result = func(
+                                prompt=subtask_prompt,
+                                previous=subtask_previous,
+                                step=step,
+                                memory=self.memory,
+                                config=self.config,
+                                cwd=self.cwd,
+                                cost_manager=self.cost_manager,
+                            )
+                            self.outputs.append(verify_result)
+                            self.total_tokens += verify_result.get(
+                                "tokens_used", 0
+                            )
+                            subtask_previous = {
+                                **subtask_previous, **verify_result
+                            }
+
+                            if not _needs_refinement(verify_result):
+                                Display.notify(
+                                    f"{step.function} passed after "
+                                    f"{round_num + 1} round(s)"
+                                )
+                                break
+
+                            feedback_result = verify_result
+                        else:
+                            Display.notify(
+                                f"Max feedback rounds "
+                                f"({MAX_FEEDBACK_ROUNDS}) reached, "
+                                f"continuing pipeline"
+                            )
+
                 self.steps_completed += 1
                 Display.step_complete(step.function, step_result)
                 Display.step_summary(step.function, step_result)

@@ -132,9 +132,9 @@ def _parse_step(step_str: str, config: dict) -> PipelineStep:
     # Parse function name and arguments
     match = re.match(r"(\w+)\((.*?)\)", step_str)
     if not match:
-        return PipelineStep(function=step_str)
+        return PipelineStep(function=step_str.lower())
 
-    func_name = match.group(1)
+    func_name = match.group(1).lower()
     args_str = match.group(2).strip()
 
     if not args_str:

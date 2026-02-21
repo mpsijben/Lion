@@ -47,7 +47,10 @@ class ContextAdapter:
             if pkg.confidence is not None:
                 section += f" [confidence: {pkg.confidence}]"
             section += ":\n"
-            section += f"Proposal: {pkg.output}\n"
+            # Truncate proposal to key content (reasoning/alternatives
+            # are shown separately below)
+            output = pkg.output[:800] if len(pkg.output) > 800 else pkg.output
+            section += f"Proposal: {output}\n"
 
             if mode != ContextMode.MINIMAL:
                 if pkg.reasoning:
@@ -96,7 +99,8 @@ class ContextAdapter:
             text = f"Agent {pkg.agent_id} (using {pkg.model}"
             if pkg.confidence is not None:
                 text += f", {int(pkg.confidence * 100)}% confident"
-            text += f") proposed: {pkg.output}"
+            output = pkg.output[:800] if len(pkg.output) > 800 else pkg.output
+            text += f") proposed: {output}"
 
             if mode != ContextMode.MINIMAL:
                 if pkg.reasoning:
@@ -132,7 +136,8 @@ class ContextAdapter:
             text = f"[{pkg.agent_id}/{pkg.model}]"
             if pkg.confidence is not None:
                 text += f" conf:{pkg.confidence}"
-            text += f"\n{pkg.output}"
+            output = pkg.output[:800] if len(pkg.output) > 800 else pkg.output
+            text += f"\n{output}"
 
             if mode != ContextMode.MINIMAL and pkg.uncertainties:
                 text += f"\nUNSURE: {'; '.join(pkg.uncertainties)}"

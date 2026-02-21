@@ -184,25 +184,26 @@ class TestMainFunction:
         """Test that main creates run directory."""
         with patch.dict(os.environ, {"LION_CWD": temp_dir}, clear=False):
             with patch.object(sys, "argv", ["lion", "test prompt"]):
-                with patch("lion.lion.PipelineExecutor") as MockExecutor:
-                    mock_result = MagicMock()
-                    mock_result.content = "Test result"
-                    mock_result.success = True
-                    mock_result.agent_summaries = []
-                    mock_result.final_decision = None
-                    mock_result.files_changed = []
-                    mock_result.steps_completed = 1
-                    mock_result.total_steps = 1
-                    mock_result.total_duration = 1.0
-                    mock_result.errors = []
-                    MockExecutor.return_value.run.return_value = mock_result
+                with patch("lion.lion.Display"):
+                    with patch("lion.lion.PipelineExecutor") as MockExecutor:
+                        mock_result = MagicMock()
+                        mock_result.content = "Test result"
+                        mock_result.success = True
+                        mock_result.agent_summaries = []
+                        mock_result.final_decision = None
+                        mock_result.files_changed = []
+                        mock_result.steps_completed = 1
+                        mock_result.total_steps = 1
+                        mock_result.total_duration = 1.0
+                        mock_result.errors = []
+                        MockExecutor.return_value.run.return_value = mock_result
 
-                    main()
+                        main()
 
-                    # Check that executor was called with correct params
-                    call_kwargs = MockExecutor.call_args[1]
-                    assert "run_dir" in call_kwargs
-                    assert ".lion/runs" in call_kwargs["run_dir"]
+                        # Check that executor was called with correct params
+                        call_kwargs = MockExecutor.call_args[1]
+                        assert "run_dir" in call_kwargs
+                        assert ".lion/runs" in call_kwargs["run_dir"]
 
     def test_hook_mode_outputs_json_summary(self, temp_dir, capsys, clear_no_recurse):
         """Test that hook mode outputs LION_SUMMARY."""
@@ -211,20 +212,22 @@ class TestMainFunction:
             "LION_SESSION_ID": "test-session"
         }, clear=False):
             with patch.object(sys, "argv", ["lion", "test prompt"]):
-                with patch("lion.lion.PipelineExecutor") as MockExecutor:
-                    mock_result = MagicMock()
-                    mock_result.content = "Test result"
-                    mock_result.success = True
-                    mock_result.agent_summaries = []
-                    mock_result.final_decision = None
-                    mock_result.files_changed = []
-                    mock_result.steps_completed = 1
-                    mock_result.total_steps = 1
-                    mock_result.total_duration = 1.0
-                    mock_result.errors = []
-                    MockExecutor.return_value.run.return_value = mock_result
+                with patch("lion.lion.Display") as MockDisplay:
+                    MockDisplay.format_completion_summary.return_value = "Lion voltooid!"
+                    with patch("lion.lion.PipelineExecutor") as MockExecutor:
+                        mock_result = MagicMock()
+                        mock_result.content = "Test result"
+                        mock_result.success = True
+                        mock_result.agent_summaries = []
+                        mock_result.final_decision = None
+                        mock_result.files_changed = []
+                        mock_result.steps_completed = 1
+                        mock_result.total_steps = 1
+                        mock_result.total_duration = 1.0
+                        mock_result.errors = []
+                        MockExecutor.return_value.run.return_value = mock_result
 
-                    main()
+                        main()
 
         captured = capsys.readouterr()
         assert "LION_SUMMARY:" in captured.out
@@ -233,23 +236,24 @@ class TestMainFunction:
         """Test that multiple args are joined into prompt."""
         with patch.dict(os.environ, {"LION_CWD": temp_dir}, clear=False):
             with patch.object(sys, "argv", ["lion", "Build", "a", "feature"]):
-                with patch("lion.lion.PipelineExecutor") as MockExecutor:
-                    mock_result = MagicMock()
-                    mock_result.content = ""
-                    mock_result.success = True
-                    mock_result.agent_summaries = []
-                    mock_result.final_decision = None
-                    mock_result.files_changed = []
-                    mock_result.steps_completed = 0
-                    mock_result.total_steps = 0
-                    mock_result.total_duration = 1.0
-                    mock_result.errors = []
-                    MockExecutor.return_value.run.return_value = mock_result
+                with patch("lion.lion.Display"):
+                    with patch("lion.lion.PipelineExecutor") as MockExecutor:
+                        mock_result = MagicMock()
+                        mock_result.content = ""
+                        mock_result.success = True
+                        mock_result.agent_summaries = []
+                        mock_result.final_decision = None
+                        mock_result.files_changed = []
+                        mock_result.steps_completed = 0
+                        mock_result.total_steps = 0
+                        mock_result.total_duration = 1.0
+                        mock_result.errors = []
+                        MockExecutor.return_value.run.return_value = mock_result
 
-                    main()
+                        main()
 
-                    call_kwargs = MockExecutor.call_args[1]
-                    assert call_kwargs["prompt"] == "Build a feature"
+                        call_kwargs = MockExecutor.call_args[1]
+                        assert call_kwargs["prompt"] == "Build a feature"
 
 
 class TestMainExceptionHandling:
@@ -259,21 +263,23 @@ class TestMainExceptionHandling:
         """Test that KeyboardInterrupt is handled gracefully."""
         with patch.dict(os.environ, {"LION_CWD": temp_dir}, clear=False):
             with patch.object(sys, "argv", ["lion", "test"]):
-                with patch("lion.lion.PipelineExecutor") as MockExecutor:
-                    MockExecutor.return_value.run.side_effect = KeyboardInterrupt()
+                with patch("lion.lion.Display"):
+                    with patch("lion.lion.PipelineExecutor") as MockExecutor:
+                        MockExecutor.return_value.run.side_effect = KeyboardInterrupt()
 
-                    # Should not raise
-                    main()
+                        # Should not raise
+                        main()
 
     def test_exception_handling_reraises(self, temp_dir, clear_no_recurse):
         """Test that other exceptions are re-raised."""
         with patch.dict(os.environ, {"LION_CWD": temp_dir}, clear=False):
             with patch.object(sys, "argv", ["lion", "test"]):
-                with patch("lion.lion.PipelineExecutor") as MockExecutor:
-                    MockExecutor.return_value.run.side_effect = ValueError("Test error")
+                with patch("lion.lion.Display"):
+                    with patch("lion.lion.PipelineExecutor") as MockExecutor:
+                        MockExecutor.return_value.run.side_effect = ValueError("Test error")
 
-                    with pytest.raises(ValueError):
-                        main()
+                        with pytest.raises(ValueError):
+                            main()
 
     def test_hook_mode_outputs_error_summary(self, temp_dir, capsys, clear_no_recurse):
         """Test that hook mode outputs error summary on exception."""
@@ -282,11 +288,12 @@ class TestMainExceptionHandling:
             "LION_SESSION_ID": "test-session"
         }, clear=False):
             with patch.object(sys, "argv", ["lion", "test"]):
-                with patch("lion.lion.PipelineExecutor") as MockExecutor:
-                    MockExecutor.return_value.run.side_effect = ValueError("Test error")
+                with patch("lion.lion.Display"):
+                    with patch("lion.lion.PipelineExecutor") as MockExecutor:
+                        MockExecutor.return_value.run.side_effect = ValueError("Test error")
 
-                    with pytest.raises(ValueError):
-                        main()
+                        with pytest.raises(ValueError):
+                            main()
 
         captured = capsys.readouterr()
         assert "LION_SUMMARY:" in captured.out

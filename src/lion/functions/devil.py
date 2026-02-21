@@ -10,6 +10,7 @@ import time
 from ..memory import SharedMemory, MemoryEntry
 from ..providers import get_provider, is_provider_name
 from ..display import Display
+from ..toon import encode as toon_encode
 
 
 DEVIL_PROMPT = """You are the Devil's Advocate. Your job is NOT to find bugs
@@ -183,13 +184,19 @@ def execute_devil(prompt, previous, step, memory, config, cwd, cost_manager=None
     # Parse issues from response
     issues = _extract_challenges(result.content)
 
-    # Write to shared memory
+    # Write to shared memory with TOON-encoded issues for compact context
+    if issues:
+        issues_toon = toon_encode({"issues": issues})
+        compact_content = f"{issues_toon}\n\nFull analysis:\n{result.content[:3000]}"
+    else:
+        compact_content = result.content[:3000]
+
     memory.write(MemoryEntry(
         timestamp=time.time(),
         phase="devil",
         agent="devil_advocate",
         type="devil_review",
-        content=result.content,
+        content=compact_content,
         metadata={
             "model": result.model,
             "aggressive": aggressive,

@@ -14,15 +14,25 @@ echo ""
 mkdir -p "$HOME/.lion/runs"
 echo "  [ok] Created ~/.lion/runs/"
 
-# 2. Create CLI wrapper in ~/.lion/bin
+# 2. Create CLI wrappers in ~/.lion/bin
 LION_BIN="$HOME/.lion/bin"
 mkdir -p "$LION_BIN"
+
+# lion - batch mode CLI
 cat > "$LION_BIN/lion" << WRAPPER
 #!/bin/bash
 PYTHONPATH="$LION_SRC" exec python3 -m lion "\$@"
 WRAPPER
 chmod +x "$LION_BIN/lion"
 echo "  [ok] Created $LION_BIN/lion CLI wrapper"
+
+# lioncli - interactive REPL
+cat > "$LION_BIN/lioncli" << WRAPPER
+#!/bin/bash
+PYTHONPATH="$LION_SRC" exec python3 -m lion.cli "\$@"
+WRAPPER
+chmod +x "$LION_BIN/lioncli"
+echo "  [ok] Created $LION_BIN/lioncli CLI wrapper"
 
 # Ensure ~/.local/bin is on PATH
 if [[ ":$PATH:" != *":$LION_BIN:"* ]]; then
@@ -79,8 +89,10 @@ echo ""
 echo "Restart Claude Code to activate the hook."
 echo ""
 echo "Usage:"
-echo '  lion "Build a feature"                    # auto-detect complexity'
+echo '  lion "Build a feature"                    # batch mode'
 echo '  lion "Build a feature" -> pride(3)        # explicit pipeline'
+echo '  lioncli                                   # interactive REPL'
+echo '  lioncli --debug                           # REPL with debug mode'
 echo ""
 echo "Config: ~/.lion/config.toml"
 echo "Runs:   ~/.lion/runs/"

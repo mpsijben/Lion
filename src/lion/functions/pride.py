@@ -22,6 +22,8 @@ from ..providers import get_provider
 from ..display import Display
 from ..lenses import get_lens, Lens
 from ..lenses.auto_assign import auto_assign_lenses
+from ..context.parser import extract_sections
+from ..toon import encode as toon_encode
 from ..context import (
     ContextMode,
     ContextPackage,
@@ -138,9 +140,10 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
         })
 
     # PHASE 2: CRITIQUE (parallel, skip if only 1 agent)
+    critiques = []
     if n_agents > 1:
         Display.phase("critique", "Agents review each other's proposals...")
-        _parallel_critique(
+        critiques = _parallel_critique(
             agents, prompt, proposals, packages, cwd, memory, context_mode,
             agent_lenses
         )
@@ -149,7 +152,7 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
     Display.phase("converge", "Synthesizing into final plan...")
     plan, confidence_map = _converge(
         agents[0], prompt, memory, cwd, packages, context_mode,
-        agent_lenses, proposals
+        agent_lenses, proposals, critiques
     )
 
     # Extract the decision from the converged plan
@@ -240,6 +243,33 @@ def _get_shared_context(memory) -> str:
     return ""
 
 
+def _summarize_proposal(content, max_chars=800):
+    """Extract key sections from a proposal for compact context.
+
+    Instead of passing the full proposal text (2000+ chars), extract
+    only the structured sections that matter: approach, findings, warnings.
+    Falls back to truncated raw text if no sections found.
+    """
+    sections = extract_sections(content)
+    parts = []
+
+    if sections.get("approach"):
+        parts.append(f"Approach: {sections['approach'][:400]}")
+    if sections.get("key findings"):
+        parts.append(f"Key Findings: {sections['key findings'][:200]}")
+    if sections.get("warnings"):
+        parts.append(f"Warnings: {sections['warnings'][:200]}")
+    if sections.get("reasoning"):
+        parts.append(f"Reasoning: {sections['reasoning'][:200]}")
+
+    if not parts:
+        # No structured sections found - use truncated raw text
+        return content[:max_chars]
+
+    result = "\n".join(parts)
+    return result[:max_chars]
+
+
 def _build_lensed_propose(prompt, agent_num, total_agents, lens, cwd, shared_context=""):
     """Build a propose prompt with lens focus injected."""
     parts = [f"You are Agent {agent_num} of {total_agents} analyzing:\n\nTASK: {prompt}\n"]
@@ -253,12 +283,12 @@ def _build_lensed_propose(prompt, agent_num, total_agents, lens, cwd, shared_con
 Other agents are analyzing from different angles.
 You do NOT need to cover everything -- go DEEP on your area.
 
-IMPORTANT: Start DIRECTLY with "## Analysis". No preamble, no "I understand", no "Let me analyze". Begin immediately with the structured output.
+IMPORTANT: Start DIRECTLY with "## Approach". No preamble, no "I understand", no "Let me analyze". Begin immediately with the structured output.
 
 Structure your response:
 
-## Analysis ({lens.name} perspective)
-[Your focused analysis and recommendations]
+## Approach
+[Your focused analysis and recommendations from a {lens.name} perspective]
 
 ## Key Findings
 - [Most important finding from your perspective]
@@ -266,6 +296,16 @@ Structure your response:
 
 ## Warnings
 - [Things that MUST be addressed from your perspective]
+
+## Reasoning
+[Why you chose this approach from a {lens.name.lower()} perspective]
+
+## Alternatives Considered
+- [Alternative 1 and why rejected/accepted]
+- [Alternative 2 and why rejected/accepted]
+
+## Uncertainties
+- [What you're unsure about]
 
 ## Confidence
 [0.0-1.0]
@@ -463,7 +503,7 @@ def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context
             own_pkg = own.get("package") if own else None
 
             if any_lensed and lens:
-                # Lensed critique: scoped to own lens
+                # Lensed critique: scoped to own lens, summarized
                 other_formatted = []
                 for p in proposals:
                     if p["agent"] == f"agent_{i + 1}":
@@ -472,15 +512,15 @@ def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context
                     other_formatted.append({
                         "num": p["agent"].replace("agent_", ""),
                         "lens_name": p_lens.name if p_lens else "General",
-                        "output": p["content"],
+                        "output": _summarize_proposal(p["content"]),
                     })
                 critique_prompt = _build_lensed_critique(
                     prompt, i + 1, lens, own_content, other_formatted
                 )
             elif context_mode == ContextMode.MINIMAL:
-                # Minimal mode: use original critique format
+                # Minimal mode: summarized proposals
                 other_proposals = "\n\n".join(
-                    f"Agent {j + 1} ({p['model']}): {p['content']}"
+                    f"Agent {j + 1} ({p['model']}): {_summarize_proposal(p['content'])}"
                     for j, p in enumerate(proposals)
                     if p["agent"] != f"agent_{i + 1}"
                 )
@@ -583,19 +623,68 @@ def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context
     return critiques
 
 
+def _build_converge_context(proposals, critiques, packages, max_chars=8000):
+    """Build focused converge context from proposals and critiques.
+
+    Instead of dumping the entire memory (80K+ chars), extract only
+    the key information: approach summaries, findings, warnings,
+    confidence, and actionable critique points.
+
+    Uses TOON for agent metadata, plain text for content summaries.
+    """
+    # Agent metadata in TOON format
+    agent_data = []
+    for p in proposals:
+        lens = p.get("lens")
+        agent_data.append({
+            "id": p["agent"].replace("agent_", ""),
+            "model": p["model"],
+            "confidence": p.get("confidence", "N/A"),
+            "lens": lens.shortcode if lens else "",
+        })
+    parts = [toon_encode({"agents": agent_data})]
+
+    # Proposal summaries
+    for p in proposals:
+        lens = p.get("lens")
+        label = f" ({lens.name})" if lens else ""
+        summary = _summarize_proposal(p["content"], max_chars=1500)
+        parts.append(
+            f"=== Agent {p['agent']}{label} ===\n{summary}"
+        )
+
+    # Critique highlights
+    if critiques:
+        parts.append("\n=== CRITIQUES ===")
+        for c in critiques:
+            # Summarize critique content too
+            content = _summarize_proposal(c["content"], max_chars=1000)
+            parts.append(f"Agent {c['agent']}: {content}")
+
+    result = "\n\n".join(parts)
+    if len(result) > max_chars:
+        result = result[:max_chars] + "\n... (truncated)"
+    return result
+
+
 def _converge(lead_agent, prompt, memory, cwd, packages, context_mode,
-              agent_lenses=None, proposals=None):
+              agent_lenses=None, proposals=None, critiques=None):
     """Synthesize all proposals and critiques into a plan with confidence weighting."""
     agent_lenses = agent_lenses or []
+    critiques = critiques or []
     any_lensed = any(l is not None for l in agent_lenses)
 
-    all_entries = memory.read_all()
-    deliberation_text = memory.format_for_prompt(all_entries)
-
-    # Truncate deliberation if too large
-    max_chars = 80000
-    if len(deliberation_text) > max_chars:
-        deliberation_text = deliberation_text[:max_chars] + "\n\n... (truncated for length)"
+    # Build focused context instead of raw memory dump
+    if proposals:
+        deliberation_text = _build_converge_context(
+            proposals, critiques, packages
+        )
+    else:
+        # Fallback to raw memory if no proposals passed
+        all_entries = memory.read_all()
+        deliberation_text = memory.format_for_prompt(all_entries)
+        if len(deliberation_text) > 80000:
+            deliberation_text = deliberation_text[:80000] + "\n\n... (truncated)"
 
     # Build confidence map for standard/rich modes
     confidence_map = {}
@@ -615,10 +704,6 @@ def _converge(lead_agent, prompt, memory, cwd, packages, context_mode,
     if any_lensed and proposals:
         converge_prompt = _build_lensed_converge(prompt, proposals, deliberation_text)
     elif context_mode == ContextMode.RICH:
-        # Build assumption conflicts and belief summary for rich mode
-        assumption_conflicts = _find_assumption_conflicts(packages)
-        belief_summary = _build_belief_summary(packages)
-
         converge_prompt = CONVERGE_PROMPT_STANDARD.format(
             prompt=prompt,
             deliberation=deliberation_text,
@@ -707,14 +792,34 @@ def _build_belief_summary(packages):
     return "\n".join(summary_parts)
 
 
+def _build_implement_context(memory, max_chars=5000):
+    """Build focused context for implementer - only decisions + warnings.
+
+    The converge plan already contains the full approach. The implementer
+    only needs additional context about hard constraints and warnings
+    that MUST be respected.
+    """
+    entries = memory.read_all()
+    parts = []
+
+    for e in entries:
+        if e.type == "decision":
+            parts.append(f"Decision: {e.content[:2000]}")
+        elif e.phase == "propose" and e.content:
+            sections = extract_sections(e.content)
+            warnings = sections.get("warnings", "")
+            if warnings:
+                agent_label = e.agent or "agent"
+                parts.append(f"{agent_label} warnings: {warnings[:500]}")
+
+    result = "\n\n".join(parts)
+    return result[:max_chars] if result else "(no additional context)"
+
+
 def _implement(lead_agent, prompt, plan, cwd, memory):
     """Implement the converged plan by writing files."""
-    # Get deliberation summary as fallback context
-    all_entries = memory.read_all()
-    deliberation_summary = memory.format_for_prompt(all_entries)
-    # Truncate to prevent overwhelming the implementer
-    if len(deliberation_summary) > 40000:
-        deliberation_summary = deliberation_summary[:40000] + "\n\n... (truncated)"
+    # Build focused context (decisions + warnings only, not full dump)
+    deliberation_summary = _build_implement_context(memory)
 
     impl_prompt = IMPLEMENT_PROMPT.format(
         prompt=prompt,
