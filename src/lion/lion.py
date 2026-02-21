@@ -1,5 +1,6 @@
 """Lion - Main CLI entry point."""
 
+import argparse
 import sys
 import os
 import time
@@ -8,6 +9,7 @@ import json
 from .parser import parse_lion_input
 from .pipeline import PipelineExecutor
 from .display import Display
+from .context import ContextMode
 
 LION_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -52,6 +54,48 @@ def detect_complexity(prompt: str, config: dict) -> str:
         return "medium"
 
 
+def parse_cli_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="\U0001f981 Lion - Language for Intelligent Orchestration Networks",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Pipeline functions:
+  pride         Multi-agent deliberation (default: 3 agents)
+  pride(n)      Multi-agent deliberation with n agents
+  review        Code review
+  test          Run tests with auto-fix
+  test(nofix)   Run tests without auto-fix
+  devil         Devil's advocate challenge
+  context       Build shared codebase context
+  distill       Compress accumulated context
+  pr            Create git PR (auto-generates branch)
+  pr(branch)    Create git PR with specific branch
+
+Examples:
+  lion "Build a feature"
+  lion "Build a feature" -> pride(3)
+  lion "Build a feature" -> pride(3) --context rich
+  lion "Build a feature" -> context() -> pride(3) -> devil()
+"""
+    )
+
+    parser.add_argument(
+        "prompt",
+        nargs="*",
+        help="Task prompt with optional pipeline"
+    )
+
+    parser.add_argument(
+        "--context",
+        choices=["minimal", "standard", "rich", "auto"],
+        default="auto",
+        help="Context mode: minimal (no extra context), standard (reasoning + alternatives), rich (+ beliefs + assumptions), auto (select based on pipeline)"
+    )
+
+    return parser.parse_args()
+
+
 def main():
     # Prevent recursive lion calls from child claude -p processes
     if os.environ.get("LION_NO_RECURSE"):
@@ -59,27 +103,31 @@ def main():
         sys.exit(0)
 
     if len(sys.argv) < 2:
+        # Print help when no arguments provided
         print("\U0001f981 Lion - Language for Intelligent Orchestration Networks")
         print()
-        print("Usage:")
-        print('  lion "Build a feature"')
-        print('  lion "Build a feature" -> pride(3)')
+        print("Usage: lion <prompt> [-> pipeline_step] [--context minimal|standard|rich|auto]")
         print()
-        print("Pipeline functions:")
-        print("  pride         Multi-agent deliberation (default: 3 agents)")
-        print("  pride(n)      Multi-agent deliberation with n agents")
-        print("  review        Code review")
-        print("  test          Run tests with auto-fix")
-        print("  test(nofix)   Run tests without auto-fix")
-        print("  pr            Create git PR (auto-generates branch)")
-        print("  pr(branch)    Create git PR with specific branch")
+        print("Run 'lion --help' for more information.")
         sys.exit(0)
 
-    # Join all arguments (handles shell quoting)
-    raw_input = " ".join(sys.argv[1:])
+    # Parse CLI arguments
+    args = parse_cli_args()
+
+    if not args.prompt:
+        print("\U0001f981 Lion - Language for Intelligent Orchestration Networks")
+        print()
+        print("Usage: lion <prompt> [--context minimal|standard|rich|auto]")
+        sys.exit(0)
+
+    # Join all prompt arguments (handles shell quoting)
+    raw_input = " ".join(args.prompt)
 
     # Load config
     config = load_config()
+
+    # Pass context mode to config for use in pipeline
+    config["context_mode"] = args.context
 
     # Parse input into prompt + pipeline
     prompt, pipeline_steps = parse_lion_input(raw_input, config)

@@ -45,6 +45,36 @@ class TestGetProvider:
         assert "gemini" in PROVIDERS
         assert "codex" in PROVIDERS
 
+    def test_get_claude_with_model(self):
+        """Test getting Claude provider with model selection."""
+        provider = get_provider("claude.haiku")
+        assert isinstance(provider, ClaudeProvider)
+        assert provider.name == "claude.haiku"
+        assert provider.model_override == "haiku"
+
+    def test_get_claude_opus(self):
+        """Test getting Claude provider with opus model."""
+        provider = get_provider("claude.opus")
+        assert provider.name == "claude.opus"
+        assert provider.model_override == "opus"
+
+    def test_get_gemini_with_model(self):
+        """Test getting Gemini provider with model selection."""
+        provider = get_provider("gemini.flash")
+        assert isinstance(provider, GeminiProvider)
+        assert provider.name == "gemini.flash"
+        assert provider.model_override == "flash"
+
+    def test_get_provider_without_model(self):
+        """Test that provider without model has no override."""
+        provider = get_provider("claude")
+        assert provider.model_override is None
+
+    def test_unknown_provider_with_model_raises(self):
+        """Test that unknown provider with model raises ValueError."""
+        with pytest.raises(ValueError):
+            get_provider("unknown.model")
+
 
 class TestAgentResult:
     """Tests for AgentResult dataclass."""
@@ -105,6 +135,40 @@ class TestClaudeProvider:
         assert result.success is True
         assert result.content == "Claude response"
         assert result.model == "claude"
+
+    def test_ask_with_model_override(self):
+        """Test that model override adds --model flag to command."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps([
+            {"type": "result", "result": "Response", "is_error": False}
+        ])
+        mock_result.stderr = ""
+
+        with patch("lion.providers.claude.subprocess.run", return_value=mock_result) as mock_run:
+            provider = ClaudeProvider(model="haiku")
+            provider.ask("Test prompt")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--model" in cmd
+        assert "haiku" in cmd
+        assert provider.name == "claude.haiku"
+
+    def test_ask_without_model_no_flag(self):
+        """Test that no model override means no --model flag."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps([
+            {"type": "result", "result": "Response", "is_error": False}
+        ])
+        mock_result.stderr = ""
+
+        with patch("lion.providers.claude.subprocess.run", return_value=mock_result) as mock_run:
+            provider = ClaudeProvider()
+            provider.ask("Test prompt")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--model" not in cmd
 
     def test_ask_timeout(self):
         """Test ask with timeout."""

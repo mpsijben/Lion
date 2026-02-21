@@ -20,6 +20,9 @@ class Provider(ABC):
 
     name: str = "base"
 
+    def __init__(self, model: str | None = None):
+        self.model_override = model
+
     @abstractmethod
     def ask(self, prompt: str, system_prompt: str = "",
             cwd: str = ".") -> AgentResult:

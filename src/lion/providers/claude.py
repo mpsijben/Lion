@@ -10,6 +10,11 @@ from .base import Provider, AgentResult
 class ClaudeProvider(Provider):
     name = "claude"
 
+    def __init__(self, model=None):
+        super().__init__(model)
+        if model:
+            self.name = f"claude.{model}"
+
     @staticmethod
     def _safe_env():
         """Create env that prevents recursive lion calls from child processes."""
@@ -20,6 +25,8 @@ class ClaudeProvider(Provider):
     def ask(self, prompt, system_prompt="", cwd="."):
         """Use claude -p for non-interactive single-turn queries."""
         cmd = ["claude", "-p", prompt, "--output-format", "json"]
+        if self.model_override:
+            cmd.extend(["--model", self.model_override])
         if system_prompt:
             cmd.extend(["--system-prompt", system_prompt])
 
@@ -28,20 +35,20 @@ class ClaudeProvider(Provider):
         start = time.time()
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=cwd, timeout=300,
+                cmd, capture_output=True, text=True, cwd=cwd, timeout=480,
                 env=env,
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
-                content="", model="claude", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 300s"
+                success=False, error="Timeout after 480s"
             )
         duration = time.time() - start
 
         if result.returncode != 0:
             return AgentResult(
-                content="", model="claude", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=duration, success=False,
                 error=result.stderr or f"Exit code {result.returncode}"
             )
@@ -82,26 +89,28 @@ class ClaudeProvider(Provider):
             "--output-format", "json",
             "--dangerously-skip-permissions",
         ]
+        if self.model_override:
+            cmd.extend(["--model", self.model_override])
 
         env = self._safe_env()
 
         start = time.time()
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=cwd, timeout=600,
+                cmd, capture_output=True, text=True, cwd=cwd, timeout=1200,
                 env=env,
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
-                content="", model="claude", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 600s"
+                success=False, error="Timeout after 1200s"
             )
         duration = time.time() - start
 
         if result.returncode != 0:
             return AgentResult(
-                content="", model="claude", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=duration, success=False,
                 error=result.stderr
             )
@@ -122,7 +131,7 @@ class ClaudeProvider(Provider):
                     if isinstance(entry, dict) and entry.get("type") == "result":
                         return AgentResult(
                             content=entry.get("result", ""),
-                            model="claude",
+                            model=self.name,
                             tokens_used=0,
                             duration_seconds=duration,
                             success=not entry.get("is_error", False),
@@ -133,7 +142,7 @@ class ClaudeProvider(Provider):
                     last = output[-1]
                     content = last.get("result", last.get("content", str(last)))
                     return AgentResult(
-                        content=content, model="claude", tokens_used=0,
+                        content=content, model=self.name, tokens_used=0,
                         duration_seconds=duration, success=True
                     )
 
@@ -141,7 +150,7 @@ class ClaudeProvider(Provider):
             if isinstance(output, dict):
                 return AgentResult(
                     content=output.get("result", stdout),
-                    model="claude", tokens_used=0,
+                    model=self.name, tokens_used=0,
                     duration_seconds=duration, success=True
                 )
         except json.JSONDecodeError:
@@ -149,6 +158,6 @@ class ClaudeProvider(Provider):
 
         # Raw text fallback
         return AgentResult(
-            content=stdout, model="claude", tokens_used=0,
+            content=stdout, model=self.name, tokens_used=0,
             duration_seconds=duration, success=True
         )

@@ -1,5 +1,7 @@
 """Execute a parsed pipeline of steps."""
 
+import concurrent.futures
+import os
 import time
 from dataclasses import dataclass
 
@@ -8,6 +10,12 @@ from .memory import SharedMemory, MemoryEntry
 from .display import Display
 from .providers import get_provider
 from .functions import FUNCTIONS
+from .context import (
+    ContextBudgetManager,
+    ContextArchaeologist,
+    detect_relevant_files,
+    select_context_mode,
+)
 
 # Functions that produce code (call implement(), write files to disk)
 PRODUCER_FUNCTIONS = {"pride", "test"}
@@ -65,6 +73,46 @@ def _needs_refinement(step_result):
     return False
 
 
+def _build_dependency_levels(subtasks):
+    """Group subtask indices into dependency levels for execution ordering.
+
+    Level 0: tasks with no dependencies
+    Level 1: tasks that depend only on level 0 tasks
+    etc.
+
+    Returns list of lists of task indices.
+    """
+    n = len(subtasks)
+    assigned = {}  # task_idx -> level
+    levels = []
+
+    # Keep assigning until all tasks are placed
+    for _ in range(n):
+        current_level = []
+        for i in range(n):
+            if i in assigned:
+                continue
+            deps = subtasks[i].get("depends_on", [])
+            # Convert 1-based to 0-based indices
+            dep_indices = [d - 1 for d in deps if 1 <= d <= n]
+            # Check if all deps are already assigned
+            if all(d in assigned for d in dep_indices):
+                current_level.append(i)
+        if not current_level:
+            # Remaining tasks have circular deps - just add them
+            remaining = [i for i in range(n) if i not in assigned]
+            if remaining:
+                levels.append(remaining)
+            break
+        for i in current_level:
+            assigned[i] = len(levels)
+        levels.append(current_level)
+        if len(assigned) == n:
+            break
+
+    return levels
+
+
 class PipelineExecutor:
     def __init__(self, prompt, steps, config, run_dir, cwd, cost_manager=None):
         self.prompt = prompt
@@ -80,6 +128,14 @@ class PipelineExecutor:
         self.total_tokens = 0
         self.agent_summaries = []
         self.final_decision = None
+        self.steps_completed = 0  # Count only real pipeline steps, not feedback re-runs
+
+        # Layer 2: Context Ecosystem
+        self.context_budget = ContextBudgetManager(config)
+        self.context_mode = select_context_mode(self.steps, config)
+
+        # Store pipeline steps in config for pride() to access
+        self.config["_pipeline_steps"] = self.steps
 
     def _expand_patterns(self, steps):
         """Expand __pattern__ meta-steps into actual steps."""
@@ -96,6 +152,9 @@ class PipelineExecutor:
         start_time = time.time()
 
         Display.pipeline_start(self.prompt, self.steps)
+
+        # Layer 2: Run archaeology to find relevant previous runs
+        self._run_archaeology()
 
         # If no pipeline steps, just run a single agent
         if not self.steps:
@@ -148,6 +207,24 @@ class PipelineExecutor:
                     self.final_decision = step_result["final_decision"]
 
                 previous_output = {**previous_output, **step_result}
+
+                # Handle task decomposition: run remaining pipeline for each subtask
+                if step_result.get("is_task_decomposition"):
+                    subtasks = step_result.get("subtasks", [])
+                    remaining_steps = self.steps[i + 1:]
+
+                    if subtasks and remaining_steps:
+                        self.steps_completed += 1
+                        Display.step_complete(step.function, step_result)
+
+                        self._run_subtasks(
+                            subtasks, remaining_steps, previous_output
+                        )
+
+                        # Skip remaining steps in the main loop
+                        # (they've been run per-subtask)
+                        break
+                    # If no remaining steps, just continue normally
 
                 # Handle feedback loop: <-> or <N-> operator
                 # Re-runs the producer, then re-verifies with the same feedback
@@ -219,7 +296,9 @@ class PipelineExecutor:
                                 f"reached, continuing pipeline"
                             )
 
+                self.steps_completed += 1
                 Display.step_complete(step.function, step_result)
+                Display.step_summary(step.function, step_result)
 
             except Exception as e:
                 self.errors.append(f"{step.function}: {str(e)}")
@@ -229,7 +308,7 @@ class PipelineExecutor:
         return PipelineResult(
             success=len(self.errors) == 0,
             prompt=self.prompt,
-            steps_completed=len(self.outputs),
+            steps_completed=self.steps_completed,
             total_steps=len(self.steps),
             outputs=self.outputs,
             total_duration=time.time() - start_time,
@@ -345,6 +424,158 @@ class PipelineExecutor:
             )
             return None
 
+    def _run_subtasks(self, subtasks, remaining_steps, previous_output):
+        """Run remaining pipeline steps for each subtask.
+
+        Groups subtasks by dependency level and runs independent subtasks
+        sequentially (parallel support can be added later).
+        """
+
+        # Build dependency graph: group tasks by level
+        levels = _build_dependency_levels(subtasks)
+
+        for level_idx, level_tasks in enumerate(levels):
+            # Clear task label for level-wide messages
+            Display.set_task_label(None)
+            Display.phase(
+                "task",
+                f"Level {level_idx + 1}/{len(levels)}: "
+                f"{len(level_tasks)} subtask(s)",
+            )
+
+            # Check if all tasks in this level are parallel-safe
+            all_parallel = all(
+                subtasks[t_idx].get("parallel", False)
+                for t_idx in level_tasks
+            )
+
+            if all_parallel and len(level_tasks) > 1:
+                # Run parallel subtasks concurrently
+                self._run_subtasks_parallel(
+                    [subtasks[i] for i in level_tasks],
+                    remaining_steps,
+                    previous_output,
+                    level_tasks,
+                )
+            else:
+                # Run sequentially
+                for task_idx in level_tasks:
+                    subtask = subtasks[task_idx]
+                    self._run_single_subtask(
+                        subtask, task_idx + 1, len(subtasks),
+                        remaining_steps, previous_output,
+                    )
+
+    def _run_single_subtask(self, subtask, task_num, total_tasks,
+                            remaining_steps, previous_output):
+        """Run the remaining pipeline steps for one subtask."""
+        title = subtask.get("title", f"Subtask {task_num}")
+        description = subtask.get("description", "")
+
+        # Set thread-local task label so all Display output is prefixed
+        task_label = f"Task {task_num}/{total_tasks}"
+        Display.set_task_label(task_label)
+
+        Display.notify(f"--- {title} ---")
+
+        # Build the subtask prompt
+        subtask_prompt = (
+            f"{self.prompt}\n\n"
+            f"FOCUS ON THIS SPECIFIC SUBTASK:\n"
+            f"Task {task_num}: {title}\n"
+            f"{description}\n"
+        )
+        if subtask.get("files"):
+            subtask_prompt += f"Files: {', '.join(subtask['files'])}\n"
+
+        # Run each remaining step with the subtask prompt
+        subtask_previous = {**previous_output}
+
+        for j, step in enumerate(remaining_steps):
+            Display.step_start(
+                j + 1, len(remaining_steps), step,
+            )
+
+            func = FUNCTIONS.get(step.function)
+            if not func:
+                self.errors.append(f"Unknown function: {step.function}")
+                Display.step_error(step.function, "Unknown function")
+                continue
+
+            try:
+                step_result = func(
+                    prompt=subtask_prompt,
+                    previous=subtask_previous,
+                    step=step,
+                    memory=self.memory,
+                    config=self.config,
+                    cwd=self.cwd,
+                    cost_manager=self.cost_manager,
+                )
+
+                self.outputs.append(step_result)
+                self.total_tokens += step_result.get("tokens_used", 0)
+                self.files_changed.extend(
+                    step_result.get("files_changed", [])
+                )
+
+                if step_result.get("agent_summaries"):
+                    self.agent_summaries = step_result["agent_summaries"]
+                if step_result.get("final_decision"):
+                    self.final_decision = step_result["final_decision"]
+
+                subtask_previous = {**subtask_previous, **step_result}
+                self.steps_completed += 1
+                Display.step_complete(step.function, step_result)
+                Display.step_summary(step.function, step_result)
+
+            except Exception as e:
+                self.errors.append(
+                    f"Subtask {task_num} - {step.function}: {str(e)}"
+                )
+                Display.step_error(step.function, str(e))
+                break
+
+        Display.notify(f"--- {title} complete ---")
+        Display.set_task_label(None)
+
+    def _run_subtasks_parallel(self, subtasks, remaining_steps,
+                               previous_output, task_indices):
+        """Run independent subtasks in parallel."""
+
+        Display.notify(
+            f"Running {len(subtasks)} independent subtasks in parallel..."
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(subtasks), 3)
+        ) as executor:
+            futures = {}
+            for i, (subtask, task_idx) in enumerate(
+                zip(subtasks, task_indices)
+            ):
+                future = executor.submit(
+                    self._run_single_subtask,
+                    subtask,
+                    task_idx + 1,
+                    len(subtasks),
+                    remaining_steps,
+                    previous_output,
+                )
+                futures[future] = task_idx
+
+            for future in concurrent.futures.as_completed(futures):
+                task_idx = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    self.errors.append(
+                        f"Subtask {task_idx + 1} failed: {str(e)}"
+                    )
+                    Display.step_error(
+                        "task", f"Subtask {task_idx + 1}: {str(e)}"
+                    )
+
     def _run_single_agent(self) -> dict:
         """Run a single agent without pipeline (for simple tasks)."""
         provider = get_provider(
@@ -358,3 +589,69 @@ class PipelineExecutor:
             "tokens_used": result.tokens_used,
             "files_changed": [],
         }
+
+    def _run_archaeology(self):
+        """Search previous runs for relevant context (Layer 2).
+
+        Uses ContextArchaeologist to find relevant historical context
+        and inject it into memory for downstream steps to use.
+        """
+        context_config = self.config.get("context", {})
+
+        # Check if archaeology is enabled
+        if not context_config.get("archaeology", True):
+            return
+
+        # Skip archaeology for simple pipelines
+        if not self.steps:
+            return
+
+        # Find the .lion/runs directory
+        runs_dir = os.path.join(self.cwd, ".lion", "runs")
+        if not os.path.exists(runs_dir):
+            return
+
+        try:
+            max_age_days = context_config.get("archaeology_max_age_days", 90)
+            archaeologist = ContextArchaeologist(runs_dir, max_age_days)
+
+            # Detect files that might be relevant
+            files_involved = detect_relevant_files(self.prompt, self.cwd)
+
+            # Find relevant previous runs
+            max_results = context_config.get("archaeology_max_results", 3)
+            relevant_runs = archaeologist.find_relevant_runs(
+                prompt=self.prompt,
+                files_involved=files_involved,
+                max_results=max_results
+            )
+
+            if relevant_runs:
+                # Format for injection
+                max_tokens = context_config.get("archaeology_max_tokens", 500)
+                history_context = archaeologist.format_for_prompt(
+                    relevant_runs, max_tokens=max_tokens
+                )
+
+                if history_context:
+                    # Inject into memory
+                    self.memory.write(MemoryEntry(
+                        timestamp=time.time(),
+                        phase="archaeology",
+                        agent="historian",
+                        type="historical_context",
+                        content=history_context,
+                        metadata={
+                            "runs_found": len(relevant_runs),
+                            "run_ids": [os.path.basename(r["run_dir"]) for r in relevant_runs],
+                        }
+                    ))
+
+                    Display.notify(
+                        f"Found {len(relevant_runs)} relevant previous run(s) "
+                        f"for context"
+                    )
+
+        except Exception as e:
+            # Archaeology is best-effort, don't fail the pipeline
+            Display.step_error("archaeology", f"Search failed: {str(e)}")

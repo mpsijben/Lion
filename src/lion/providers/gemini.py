@@ -10,6 +10,11 @@ from .base import Provider, AgentResult
 class GeminiProvider(Provider):
     name = "gemini"
 
+    def __init__(self, model=None):
+        super().__init__(model)
+        if model:
+            self.name = f"gemini.{model}"
+
     @staticmethod
     def _safe_env():
         """Create env that prevents recursive lion calls from child processes."""
@@ -19,27 +24,30 @@ class GeminiProvider(Provider):
 
     def ask(self, prompt, system_prompt="", cwd="."):
         """Use gemini CLI for non-interactive single-turn queries."""
-        cmd = ["gemini", "-o", "json", prompt]
+        cmd = ["gemini", "-o", "json"]
+        if self.model_override:
+            cmd.extend(["-m", self.model_override])
+        cmd.append(prompt)
 
         env = self._safe_env()
 
         start = time.time()
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=cwd, timeout=300,
+                cmd, capture_output=True, text=True, cwd=cwd, timeout=480,
                 env=env,
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
-                content="", model="gemini", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 300s"
+                success=False, error="Timeout after 480s"
             )
         duration = time.time() - start
 
         if result.returncode != 0:
             return AgentResult(
-                content="", model="gemini", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=duration, success=False,
                 error=result.stderr or f"Exit code {result.returncode}"
             )
@@ -69,27 +77,30 @@ class GeminiProvider(Provider):
             "from documentation or proposals. Only write/edit code files."
         )
 
-        cmd = ["gemini", "-o", "json", "--yolo", impl_prompt]
+        cmd = ["gemini", "-o", "json", "--yolo"]
+        if self.model_override:
+            cmd.extend(["-m", self.model_override])
+        cmd.append(impl_prompt)
 
         env = self._safe_env()
 
         start = time.time()
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=cwd, timeout=600,
+                cmd, capture_output=True, text=True, cwd=cwd, timeout=1200,
                 env=env,
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
-                content="", model="gemini", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 600s"
+                success=False, error="Timeout after 1200s"
             )
         duration = time.time() - start
 
         if result.returncode != 0:
             return AgentResult(
-                content="", model="gemini", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=duration, success=False,
                 error=result.stderr or f"Exit code {result.returncode}"
             )
@@ -113,7 +124,7 @@ class GeminiProvider(Provider):
 
                 parsed = AgentResult(
                     content=content,
-                    model="gemini",
+                    model=self.name,
                     tokens_used=tokens,
                     duration_seconds=duration,
                     success=True,
@@ -129,6 +140,6 @@ class GeminiProvider(Provider):
 
         # Raw text fallback
         return AgentResult(
-            content=stdout, model="gemini", tokens_used=0,
+            content=stdout, model=self.name, tokens_used=0,
             duration_seconds=duration, success=True
         )

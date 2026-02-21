@@ -9,6 +9,9 @@ from .lint import execute_lint
 from .typecheck import execute_typecheck
 from .future import execute_future
 from .devil import execute_devil
+from .context_build import execute_context
+from .distill import execute_distill
+from .task import execute_task
 
 FUNCTIONS = {
     "pride": execute_pride,
@@ -21,4 +24,7 @@ FUNCTIONS = {
     "typecheck": execute_typecheck,
     "future": execute_future,
     "devil": execute_devil,
+    "context": execute_context,
+    "distill": execute_distill,
+    "task": execute_task,
 }

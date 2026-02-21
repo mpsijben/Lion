@@ -8,7 +8,7 @@ by the team.
 import re
 import time
 from ..memory import SharedMemory, MemoryEntry
-from ..providers import get_provider
+from ..providers import get_provider, is_provider_name
 from ..display import Display
 
 
@@ -131,7 +131,7 @@ def execute_devil(prompt, previous, step, memory, config, cwd, cost_manager=None
         arg_str = str(arg).lower()
         if arg_str == "aggressive":
             aggressive = True
-        elif arg_str in ("claude", "gemini", "codex", "ollama"):
+        elif is_provider_name(arg_str):
             provider_name = arg_str
 
     provider = get_provider(provider_name, config)

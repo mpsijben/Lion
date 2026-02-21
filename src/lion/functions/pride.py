@@ -5,28 +5,39 @@ The heart of Lion. Spawns multiple agents that:
 2. Critique each other's proposals (parallel)
 3. Converge on a consensus plan (single agent)
 4. Implement the plan (with file editing)
+
+Layer 2: Context Ecosystem integration
+- Mode-aware prompts (minimal/standard/rich)
+- ContextPackage parsing for structured output
+- Cross-agent context sharing via ContextAdapter
+- Confidence-weighted convergence
 """
 
 import concurrent.futures
 import time
+from dataclasses import asdict
 
 from ..memory import SharedMemory, MemoryEntry
 from ..providers import get_provider
 from ..display import Display
+from ..context import (
+    ContextMode,
+    ContextPackage,
+    ContextAdapter,
+    parse_context_package,
+    select_context_mode,
+    get_propose_prompt,
+    get_critique_prompt,
+    get_converge_prompt,
+    PROPOSE_PROMPT_MINIMAL,
+    PROPOSE_PROMPT_STANDARD,
+    PROPOSE_PROMPT_RICH,
+    CONVERGE_PROMPT_MINIMAL,
+    CONVERGE_PROMPT_STANDARD,
+)
 
-PROPOSE_PROMPT = """You are Agent {agent_num} in a team of {total_agents} working on this task:
-
-TASK: {prompt}
-
-WORKING DIRECTORY: {cwd}
-
-Propose your approach. Be specific about:
-1. Architecture and design decisions
-2. Files to create or modify
-3. Key implementation details
-4. Potential risks or edge cases
-
-Keep it concise but actionable."""
+# Legacy prompts for backwards compatibility (used in minimal mode)
+PROPOSE_PROMPT = PROPOSE_PROMPT_MINIMAL
 
 CRITIQUE_PROMPT = """You are Agent {agent_num} reviewing proposals from your team.
 
@@ -42,27 +53,11 @@ For each other proposal, state:
 1. What you agree with
 2. What concerns you
 3. What they thought of that you missed
-4. Your updated recommendation"""
+4. Your updated recommendation
 
-CONVERGE_PROMPT = """You are the lead synthesizer. Your team proposed and critiqued approaches.
+Start DIRECTLY with your analysis -- no preamble."""
 
-TASK: {prompt}
-
-ALL PROPOSALS AND CRITIQUES:
-{deliberation}
-
-Create the FINAL PLAN:
-1. Best elements from each proposal
-2. All valid critiques addressed
-3. Concrete task list for implementation
-
-Format:
-DECISION: [summary of approach and key choices]
-
-TASKS:
-1. [task description] | files: [file paths]
-2. [task description] | files: [file paths] | depends_on: [1]
-..."""
+CONVERGE_PROMPT = CONVERGE_PROMPT_MINIMAL
 
 IMPLEMENT_PROMPT = """Implement this plan completely.
 
@@ -71,8 +66,12 @@ OVERALL GOAL: {prompt}
 PLAN:
 {plan}
 
+DELIBERATION CONTEXT:
+{deliberation_summary}
+
 Make all the actual code changes. Create and edit files as needed.
-Be thorough and implement the full plan."""
+Be thorough and implement the full plan. Follow the PLAN above closely.
+If the PLAN seems incomplete, use the DELIBERATION CONTEXT for guidance."""
 
 
 def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None):
@@ -81,14 +80,28 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
     agents = _resolve_agents(step, config)
     n_agents = len(agents)
 
+    # Determine context mode
+    context_mode_str = step.kwargs.get("context", config.get("context_mode", "auto"))
+    if context_mode_str == "auto":
+        # Get all pipeline steps from config if available
+        pipeline_steps = config.get("_pipeline_steps", [step])
+        context_mode_str = select_context_mode(pipeline_steps, config)
+
+    context_mode = ContextMode(context_mode_str)
+
     # Track agent summaries for final output
     agent_summaries = []
 
     Display.pride_start(n_agents, [a.name for a in agents])
 
+    # Get shared context if available
+    shared_context = _get_shared_context(memory)
+
     # PHASE 1: PROPOSE (parallel)
     Display.phase("propose", "Each agent proposes independently...")
-    proposals = _parallel_propose(agents, prompt, cwd, memory)
+    proposals, packages = _parallel_propose(
+        agents, prompt, cwd, memory, context_mode, shared_context
+    )
 
     if not proposals:
         return {
@@ -107,16 +120,19 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
             "agent": proposal["agent"],
             "model": proposal["model"],
             "summary": summary,
+            "confidence": proposal.get("confidence"),
         })
 
     # PHASE 2: CRITIQUE (parallel, skip if only 1 agent)
     if n_agents > 1:
         Display.phase("critique", "Agents review each other's proposals...")
-        _parallel_critique(agents, prompt, proposals, cwd, memory)
+        _parallel_critique(
+            agents, prompt, proposals, packages, cwd, memory, context_mode
+        )
 
     # PHASE 3: CONVERGE (single agent)
     Display.phase("converge", "Synthesizing into final plan...")
-    plan = _converge(agents[0], prompt, memory, cwd)
+    plan, confidence_map = _converge(agents[0], prompt, memory, cwd, packages, context_mode)
 
     # Extract the decision from the converged plan
     final_decision = _extract_decision_summary(plan)
@@ -135,6 +151,8 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
         "deliberation_summary": memory.format_for_prompt(memory.read_all()),
         "agent_summaries": agent_summaries,
         "final_decision": final_decision,
+        "confidence_map": confidence_map,
+        "context_mode": context_mode_str,
     }
 
 
@@ -155,23 +173,46 @@ def _resolve_agents(step, config):
     return [get_provider(default_provider, config) for _ in range(3)]
 
 
-def _parallel_propose(agents, prompt, cwd, memory):
-    """Run propose phase in parallel."""
+def _get_shared_context(memory) -> str:
+    """Get shared context from previous context() step if available."""
+    shared_entries = memory.read_by_type("shared_context")
+    if shared_entries:
+        return f"SHARED CONTEXT:\n{shared_entries[-1].content}\n"
+
+    historical_entries = memory.read_by_type("historical_context")
+    if historical_entries:
+        return f"HISTORICAL CONTEXT:\n{historical_entries[-1].content}\n"
+
+    return ""
+
+
+def _parallel_propose(agents, prompt, cwd, memory, context_mode, shared_context=""):
+    """Run propose phase in parallel with mode-aware prompts."""
     proposals = []
+    packages = []
+
+    # Select prompt template based on mode
+    if context_mode == ContextMode.RICH:
+        prompt_template = PROPOSE_PROMPT_RICH
+    elif context_mode == ContextMode.STANDARD:
+        prompt_template = PROPOSE_PROMPT_STANDARD
+    else:
+        prompt_template = PROPOSE_PROMPT_MINIMAL
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(agents)) as executor:
         futures = {}
         for i, agent in enumerate(agents):
-            agent_prompt = PROPOSE_PROMPT.format(
+            agent_prompt = prompt_template.format(
                 agent_num=i + 1,
                 total_agents=len(agents),
                 prompt=prompt,
                 cwd=cwd,
+                shared_context=shared_context,
             )
-            futures[executor.submit(agent.ask, agent_prompt, "", cwd)] = i
+            futures[executor.submit(agent.ask, agent_prompt, "", cwd)] = (i, agent)
 
         for future in concurrent.futures.as_completed(futures):
-            i = futures[future]
+            i, agent = futures[future]
             try:
                 result = future.result()
             except Exception as e:
@@ -182,50 +223,127 @@ def _parallel_propose(agents, prompt, cwd, memory):
                 Display.step_error(f"Agent {i + 1} propose", result.error or "Unknown error")
                 continue
 
+            # Parse structured output into ContextPackage
+            package = parse_context_package(
+                result.content,
+                agent_id=f"agent_{i + 1}",
+                model=result.model,
+                mode=context_mode
+            )
+            packages.append(package)
+
             proposals.append({
                 "agent": f"agent_{i + 1}",
                 "content": result.content,
                 "model": result.model,
                 "tokens": result.tokens_used,
+                "confidence": package.confidence,
+                "package": package,
             })
 
+            # Write to memory with context fields
             memory.write(MemoryEntry(
                 timestamp=time.time(),
                 phase="propose",
                 agent=f"agent_{i + 1}",
                 type="proposal",
                 content=result.content,
-                metadata={"model": result.model},
+                metadata={
+                    "model": result.model,
+                    "context_mode": context_mode.value,
+                },
+                reasoning=package.reasoning,
+                alternatives=package.alternatives,
+                uncertainties=package.uncertainties,
+                confidence=package.confidence,
+                belief_state=asdict(package.belief_state) if package.belief_state else None,
             ))
 
             Display.agent_proposal(i + 1, result.model, result.content[:150])
 
-    return proposals
+    return proposals, packages
 
 
-def _parallel_critique(agents, prompt, proposals, cwd, memory):
-    """Run critique phase in parallel."""
+def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context_mode):
+    """Run critique phase in parallel with context awareness."""
     critiques = []
+    adapter = ContextAdapter()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(agents)) as executor:
         futures = {}
         for i, agent in enumerate(agents):
-            # Find this agent's proposal
+            # Find this agent's proposal and package
             own = next((p for p in proposals if p["agent"] == f"agent_{i + 1}"), None)
             own_content = own["content"] if own else "(no proposal)"
+            own_pkg = own.get("package") if own else None
 
-            other_proposals = "\n\n".join(
-                f"Agent {j + 1} ({p['model']}): {p['content']}"
-                for j, p in enumerate(proposals)
-                if p["agent"] != f"agent_{i + 1}"
-            )
+            if context_mode == ContextMode.MINIMAL:
+                # Minimal mode: use original critique format
+                other_proposals = "\n\n".join(
+                    f"Agent {j + 1} ({p['model']}): {p['content']}"
+                    for j, p in enumerate(proposals)
+                    if p["agent"] != f"agent_{i + 1}"
+                )
 
-            critique_prompt = CRITIQUE_PROMPT.format(
-                agent_num=i + 1,
-                prompt=prompt,
-                own_proposal=own_content,
-                other_proposals=other_proposals,
-            )
+                critique_prompt = CRITIQUE_PROMPT.format(
+                    agent_num=i + 1,
+                    prompt=prompt,
+                    own_proposal=own_content,
+                    other_proposals=other_proposals,
+                )
+            else:
+                # Standard/Rich mode: use context-aware critique
+                # Get other packages
+                other_packages = [pkg for pkg in packages if pkg.agent_id != f"agent_{i + 1}"]
+
+                # Format using ContextAdapter
+                other_proposals_formatted = adapter.format(
+                    other_packages,
+                    target_provider=agent.name,
+                    mode=context_mode
+                )
+
+                # Build own context
+                own_reasoning = own_pkg.reasoning if own_pkg else ""
+                own_uncertainties = "; ".join(own_pkg.uncertainties) if own_pkg else ""
+                own_assumptions = "; ".join(own_pkg.assumptions) if own_pkg else ""
+
+                # Build belief states section for rich mode
+                belief_states_formatted = ""
+                if context_mode == ContextMode.RICH:
+                    for pkg in other_packages:
+                        if pkg.belief_state:
+                            belief_states_formatted += f"\n{pkg.agent_id}:\n"
+                            if pkg.belief_state.knows:
+                                belief_states_formatted += f"  Knows: {'; '.join(pkg.belief_state.knows)}\n"
+                            if pkg.belief_state.believes:
+                                belief_states_formatted += f"  Believes: {'; '.join(pkg.belief_state.believes)}\n"
+                            if pkg.belief_state.others_likely_missing:
+                                belief_states_formatted += f"  Others might miss: {'; '.join(pkg.belief_state.others_likely_missing)}\n"
+
+                from ..context.prompts import CRITIQUE_PROMPT_STANDARD, CRITIQUE_PROMPT_RICH
+
+                if context_mode == ContextMode.RICH:
+                    critique_prompt = CRITIQUE_PROMPT_RICH.format(
+                        agent_num=i + 1,
+                        prompt=prompt,
+                        own_proposal_output=own_content,
+                        own_reasoning=own_reasoning,
+                        own_uncertainties=own_uncertainties,
+                        own_assumptions=own_assumptions,
+                        other_proposals_formatted=other_proposals_formatted,
+                        belief_states_formatted=belief_states_formatted,
+                    )
+                else:
+                    critique_prompt = CRITIQUE_PROMPT_STANDARD.format(
+                        agent_num=i + 1,
+                        prompt=prompt,
+                        own_proposal_output=own_content,
+                        own_reasoning=own_reasoning,
+                        own_uncertainties=own_uncertainties,
+                        other_proposals_formatted=other_proposals_formatted,
+                    )
+
             futures[executor.submit(agent.ask, critique_prompt, "", cwd)] = i
 
         for future in concurrent.futures.as_completed(futures):
@@ -251,7 +369,10 @@ def _parallel_critique(agents, prompt, proposals, cwd, memory):
                 agent=f"agent_{i + 1}",
                 type="critique",
                 content=result.content,
-                metadata={"model": result.model},
+                metadata={
+                    "model": result.model,
+                    "context_mode": context_mode.value,
+                },
             ))
 
             Display.agent_critique(i + 1, result.content[:150])
@@ -259,20 +380,52 @@ def _parallel_critique(agents, prompt, proposals, cwd, memory):
     return critiques
 
 
-def _converge(lead_agent, prompt, memory, cwd):
-    """Synthesize all proposals and critiques into a plan."""
+def _converge(lead_agent, prompt, memory, cwd, packages, context_mode):
+    """Synthesize all proposals and critiques into a plan with confidence weighting."""
     all_entries = memory.read_all()
     deliberation_text = memory.format_for_prompt(all_entries)
 
-    # Truncate deliberation if too large (claude -p context limits)
+    # Truncate deliberation if too large
     max_chars = 80000
     if len(deliberation_text) > max_chars:
         deliberation_text = deliberation_text[:max_chars] + "\n\n... (truncated for length)"
 
-    converge_prompt = CONVERGE_PROMPT.format(
-        prompt=prompt,
-        deliberation=deliberation_text,
-    )
+    # Build confidence map for standard/rich modes
+    confidence_map = {}
+    confidence_map_text = ""
+
+    if context_mode != ContextMode.MINIMAL and packages:
+        conf_lines = []
+        for pkg in packages:
+            conf = pkg.confidence if pkg.confidence is not None else 0.5
+            label = "HIGH" if conf >= 0.7 else ("MODERATE" if conf >= 0.4 else "LOW")
+            confidence_map[pkg.agent_id] = {"confidence": conf, "label": label}
+            conf_lines.append(f"- {pkg.agent_id} ({pkg.model}): {conf} ({label})")
+
+        confidence_map_text = "\n".join(conf_lines)
+
+    # Select converge prompt based on mode
+    if context_mode == ContextMode.RICH:
+        # Build assumption conflicts and belief summary for rich mode
+        assumption_conflicts = _find_assumption_conflicts(packages)
+        belief_summary = _build_belief_summary(packages)
+
+        converge_prompt = CONVERGE_PROMPT_STANDARD.format(
+            prompt=prompt,
+            deliberation=deliberation_text,
+            confidence_map=confidence_map_text or "No confidence data available",
+        )
+    elif context_mode == ContextMode.STANDARD:
+        converge_prompt = CONVERGE_PROMPT_STANDARD.format(
+            prompt=prompt,
+            deliberation=deliberation_text,
+            confidence_map=confidence_map_text or "No confidence data available",
+        )
+    else:
+        converge_prompt = CONVERGE_PROMPT.format(
+            prompt=prompt,
+            deliberation=deliberation_text,
+        )
 
     # Retry up to 2 times if converge returns empty
     result = None
@@ -302,18 +455,62 @@ def _converge(lead_agent, prompt, memory, cwd):
         agent="synthesizer",
         type="decision",
         content=content,
-        metadata={"model": result.model if result else "unknown"},
+        metadata={
+            "model": result.model if result else "unknown",
+            "context_mode": context_mode.value,
+            "confidence_map": confidence_map,
+        },
     ))
 
     Display.convergence(content[:300])
-    return content
+    return content, confidence_map
+
+
+def _find_assumption_conflicts(packages):
+    """Find conflicting assumptions between agents."""
+    conflicts = []
+    for i, pkg1 in enumerate(packages):
+        for pkg2 in packages[i+1:]:
+            if pkg1.assumptions and pkg2.assumptions:
+                # Simple keyword overlap check for conflicting assumptions
+                for a1 in pkg1.assumptions:
+                    for a2 in pkg2.assumptions:
+                        a1_lower = a1.lower()
+                        a2_lower = a2.lower()
+                        # Check if one negates the other
+                        if ("not" in a1_lower and "not" not in a2_lower) or \
+                           ("not" not in a1_lower and "not" in a2_lower):
+                            conflicts.append(f"{pkg1.agent_id}: '{a1}' vs {pkg2.agent_id}: '{a2}'")
+    return conflicts
+
+
+def _build_belief_summary(packages):
+    """Build a summary of what agents know vs believe."""
+    summary_parts = []
+    for pkg in packages:
+        if pkg.belief_state:
+            part = f"{pkg.agent_id}:"
+            if pkg.belief_state.knows:
+                part += f"\n  Verified: {'; '.join(pkg.belief_state.knows[:3])}"
+            if pkg.belief_state.believes:
+                part += f"\n  Unverified: {'; '.join(pkg.belief_state.believes[:3])}"
+            summary_parts.append(part)
+    return "\n".join(summary_parts)
 
 
 def _implement(lead_agent, prompt, plan, cwd, memory):
     """Implement the converged plan by writing files."""
+    # Get deliberation summary as fallback context
+    all_entries = memory.read_all()
+    deliberation_summary = memory.format_for_prompt(all_entries)
+    # Truncate to prevent overwhelming the implementer
+    if len(deliberation_summary) > 40000:
+        deliberation_summary = deliberation_summary[:40000] + "\n\n... (truncated)"
+
     impl_prompt = IMPLEMENT_PROMPT.format(
         prompt=prompt,
         plan=plan,
+        deliberation_summary=deliberation_summary,
     )
 
     result = lead_agent.implement(impl_prompt, cwd)
@@ -345,34 +542,159 @@ def _extract_decisions(memory):
 
 def _extract_one_liner(content):
     """Extract a concise 1-liner summary from proposal content."""
-    # Take first meaningful line or first sentence
+    # AI preamble patterns to skip (case-insensitive check)
+    _PREAMBLE_STARTS = (
+        "now i have",
+        "i have analyzed",
+        "i have a complete",
+        "i have a comprehensive",
+        "i've analyzed",
+        "i've reviewed",
+        "i now have",
+        "let me ",
+        "here's my ",
+        "here is my ",
+        "after analyzing",
+        "after reviewing",
+        "based on my analysis",
+        "based on my review",
+        "i'll provide",
+        "i will provide",
+        "perfect.",
+        "perfect,",
+        "perfect!",
+        "perfect -",
+        "great.",
+        "great,",
+        "great!",
+        "great -",
+        "excellent.",
+        "excellent,",
+        "excellent!",
+        "understood.",
+        "understood,",
+        "understood!",
+        "okay,",
+        "okay.",
+        "ok,",
+        "ok.",
+        "sure,",
+        "sure.",
+        "absolutely.",
+        "absolutely,",
+        "alright,",
+        "alright.",
+        "thank you",
+        "thanks for",
+        "i understand",
+        "i'll analyze",
+        "i will analyze",
+        "i can see",
+        "looking at",
+    )
+
+    # Look for structured content first: DECISION, APPROACH, PROPOSAL headers
     lines = content.strip().split("\n")
     for line in lines:
+        stripped = line.strip()
+        upper = stripped.upper().lstrip("#").lstrip("*").strip()
+        for keyword in ("DECISION:", "APPROACH:", "PROPOSAL:", "SUMMARY:"):
+            if upper.startswith(keyword):
+                after = stripped[stripped.upper().index(keyword.rstrip(":")) + len(keyword):]
+                after = after.lstrip(":").lstrip("*").strip()
+                if after and len(after) > 10:
+                    if len(after) > 100:
+                        return after[:100].rsplit(" ", 1)[0] + "..."
+                    return after
+
+    # Fallback: find first meaningful non-preamble line
+    for line in lines:
         line = line.strip()
-        # Skip headers, bullet points starting with numbers
-        if line and not line.startswith("#") and len(line) > 10:
-            # Truncate to ~100 chars at word boundary
-            if len(line) > 100:
-                truncated = line[:100].rsplit(" ", 1)[0]
-                return truncated + "..."
-            return line
-    # Fallback: first 100 chars
-    return content[:100].replace("\n", " ") + "..."
+        if not line or len(line) <= 10:
+            continue
+        if line.startswith("#") or line.startswith("|") or line.startswith("---"):
+            continue
+        if line.startswith("- **") or line.startswith("* **"):
+            continue
+        # Skip AI preamble
+        lower = line.lower()
+        if any(lower.startswith(p) for p in _PREAMBLE_STARTS):
+            continue
+        if len(line) > 100:
+            truncated = line[:100].rsplit(" ", 1)[0]
+            return truncated + "..."
+        return line
+    # Last resort: first 100 chars, cleaned up
+    return content[:100].replace("\n", " ").strip() + "..."
 
 
 def _extract_decision_summary(plan):
     """Extract the DECISION line from a converged plan."""
+    _PREAMBLE_STARTS = (
+        "now i have",
+        "i have a complete",
+        "i have a comprehensive",
+        "i've analyzed",
+        "i've reviewed",
+        "i now have",
+        "let me ",
+        "here's ",
+        "here is ",
+        "after analyzing",
+        "after reviewing",
+        "based on ",
+        "perfect.",
+        "perfect,",
+        "perfect!",
+        "great.",
+        "great,",
+        "great!",
+        "excellent.",
+        "excellent,",
+        "understood.",
+        "understood,",
+        "okay,",
+        "okay.",
+        "i understand",
+        "i'll analyze",
+        "looking at",
+        "thank you",
+    )
+
     lines = plan.strip().split("\n")
+
+    # First pass: look for explicit DECISION: line
     for line in lines:
-        if line.strip().upper().startswith("DECISION:"):
-            # Return everything after "DECISION:"
-            decision = line.split(":", 1)[1].strip() if ":" in line else line
-            # Truncate if too long
+        stripped = line.strip()
+        upper = stripped.upper().lstrip("#").lstrip("*").strip()
+        if upper.startswith("DECISION:") or upper.startswith("DECISION :"):
+            idx = stripped.upper().index("DECISION")
+            after = stripped[idx + len("DECISION"):]
+            decision = after.lstrip(":").lstrip("*").strip()
+            # If DECISION: is on its own line, grab the next non-empty line
+            if not decision:
+                found_decision = False
+                for next_line in lines[lines.index(line) + 1:]:
+                    next_stripped = next_line.strip()
+                    if next_stripped and not next_stripped.startswith("#"):
+                        decision = next_stripped
+                        found_decision = True
+                        break
+                if not found_decision:
+                    continue
             if len(decision) > 150:
                 return decision[:150].rsplit(" ", 1)[0] + "..."
             return decision
-    # Fallback: first line of plan
-    first_line = lines[0].strip() if lines else "Plan completed"
-    if len(first_line) > 150:
-        return first_line[:150].rsplit(" ", 1)[0] + "..."
-    return first_line
+
+    # Fallback: first meaningful non-header, non-preamble line
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("---"):
+            continue
+        lower = stripped.lower()
+        if any(lower.startswith(p) for p in _PREAMBLE_STARTS):
+            continue
+        if len(stripped) > 150:
+            return stripped[:150].rsplit(" ", 1)[0] + "..."
+        return stripped
+    return "Plan completed"

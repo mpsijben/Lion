@@ -376,6 +376,79 @@ class TestDisplayFormatCompletionSummary:
         assert "Taak uitgevoerd" in summary
 
 
+class TestDisplayStepSummary:
+    """Tests for Display.step_summary method."""
+
+    def test_step_summary_with_issues(self):
+        """Test step summary shows issue counts."""
+        result = {
+            "critical_count": 2,
+            "warning_count": 3,
+            "suggestion_count": 1,
+            "content": "Found issues",
+        }
+
+        with patch("lion.display._print") as mock_print:
+            Display.step_summary("review", result)
+
+        calls = mock_print.call_args_list
+        call_str = str(calls)
+        assert "2 critical" in call_str
+        assert "3 warnings" in call_str
+        assert "1 suggestions" in call_str
+
+    def test_step_summary_no_issues(self):
+        """Test step summary with no issues shows content preview."""
+        result = {
+            "critical_count": 0,
+            "warning_count": 0,
+            "content": "Line 1\nLine 2\nLine 3\nLine 4\nLine 5",
+        }
+
+        with patch("lion.display._print") as mock_print:
+            Display.step_summary("review", result)
+
+        calls = mock_print.call_args_list
+        call_str = str(calls)
+        # Should show first 3 lines
+        assert "Line 1" in call_str
+        assert "Line 3" in call_str
+        # Should show "more lines" indicator
+        assert "2 more lines" in call_str
+
+    def test_step_summary_empty_result(self):
+        """Test step summary with empty result."""
+        with patch("lion.display._print") as mock_print:
+            Display.step_summary("review", {})
+
+        # Nothing to show
+        mock_print.assert_not_called()
+
+    def test_step_summary_only_content(self):
+        """Test step summary with content but no issue counts."""
+        result = {"content": "Short content"}
+
+        with patch("lion.display._print") as mock_print:
+            Display.step_summary("devil", result)
+
+        calls = mock_print.call_args_list
+        assert any("Short content" in str(c) for c in calls)
+
+    def test_step_summary_truncates_long_lines(self):
+        """Test that long content lines are truncated."""
+        result = {"content": "x" * 200}
+
+        with patch("lion.display._print") as mock_print:
+            Display.step_summary("review", result)
+
+        calls = mock_print.call_args_list
+        # Line should be truncated to 120 chars
+        for c in calls:
+            line_content = str(c)
+            # The actual content in the call should not exceed 120 chars of 'x'
+            assert "x" * 121 not in line_content
+
+
 class TestDisplayPrideStart:
     """Tests for Display.pride_start method."""
 

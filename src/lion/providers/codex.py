@@ -10,6 +10,11 @@ from .base import Provider, AgentResult
 class CodexProvider(Provider):
     name = "codex"
 
+    def __init__(self, model=None):
+        super().__init__(model)
+        if model:
+            self.name = f"codex.{model}"
+
     @staticmethod
     def _safe_env():
         """Create env that prevents recursive lion calls from child processes."""
@@ -28,20 +33,20 @@ class CodexProvider(Provider):
         start = time.time()
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300,
+                cmd, capture_output=True, text=True, timeout=480,
                 env=env,
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
-                content="", model="codex", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 300s"
+                success=False, error="Timeout after 480s"
             )
         duration = time.time() - start
 
         if result.returncode != 0:
             return AgentResult(
-                content="", model="codex", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=duration, success=False,
                 error=result.stderr or f"Exit code {result.returncode}"
             )
@@ -84,20 +89,20 @@ class CodexProvider(Provider):
         start = time.time()
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=600,
+                cmd, capture_output=True, text=True, timeout=1200,
                 env=env,
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
-                content="", model="codex", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 600s"
+                success=False, error="Timeout after 1200s"
             )
         duration = time.time() - start
 
         if result.returncode != 0:
             return AgentResult(
-                content="", model="codex", tokens_used=0,
+                content="", model=self.name, tokens_used=0,
                 duration_seconds=duration, success=False,
                 error=result.stderr or f"Exit code {result.returncode}"
             )
@@ -134,14 +139,14 @@ class CodexProvider(Provider):
 
         if not content.strip():
             return AgentResult(
-                content=content, model="codex", tokens_used=tokens,
+                content=content, model=self.name, tokens_used=tokens,
                 duration_seconds=duration, success=True,
                 error="codex returned empty response"
             )
 
         return AgentResult(
             content=content,
-            model="codex",
+            model=self.name,
             tokens_used=tokens,
             duration_seconds=duration,
             success=True,

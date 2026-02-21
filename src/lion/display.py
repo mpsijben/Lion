@@ -1,29 +1,86 @@
 """Terminal output formatting for Lion."""
 
 import sys
+import threading
 
 # ANSI colors
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RED = "\033[31m"
 BLUE = "\033[34m"
+CYAN = "\033[36m"
 DIM = "\033[2m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 LION = f"{YELLOW}\U0001f981{RESET}"
 
+# Thread-local storage for subtask context
+_task_context = threading.local()
+
+
+def _get_task_prefix():
+    """Get the current subtask prefix for display, if any."""
+    label = getattr(_task_context, "label", None)
+    if label:
+        return f"{CYAN}[{label}]{RESET} "
+    return ""
+
 
 def _print(msg):
     """Print to terminal, bypassing any stdout redirection."""
+    prefix = _get_task_prefix()
     try:
         with open("/dev/tty", "w") as tty:
-            tty.write(msg + "\n")
+            tty.write(prefix + msg + "\n")
             tty.flush()
     except OSError:
-        print(msg, file=sys.stderr)
+        print(prefix + msg, file=sys.stderr)
+
+
+_PREAMBLE_STARTS = (
+    "perfect.", "perfect,", "perfect!", "perfect -",
+    "great.", "great,", "great!", "great -",
+    "excellent.", "excellent,", "excellent!",
+    "understood.", "understood,", "understood!",
+    "okay,", "okay.", "ok,", "ok.",
+    "sure,", "sure.", "absolutely.", "absolutely,",
+    "alright,", "alright.",
+    "thank you", "thanks for",
+    "now i have", "i have analyzed", "i have a complete",
+    "i have a comprehensive", "i've analyzed", "i've reviewed",
+    "i now have", "i understand", "i'll analyze", "i will analyze",
+    "i can see", "looking at",
+    "let me ", "here's my ", "here is my ",
+    "after analyzing", "after reviewing",
+    "based on my analysis", "based on my review",
+    "i'll provide", "i will provide",
+)
+
+
+def _skip_preamble(text):
+    """Strip boilerplate preamble lines from AI output for display."""
+    lines = text.strip().split("\n")
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        if any(lower.startswith(p) for p in _PREAMBLE_STARTS):
+            continue
+        # Found a non-preamble line, return from here
+        return "\n".join(lines[i:])
+    return text
 
 
 class Display:
+
+    @staticmethod
+    def set_task_label(label):
+        """Set a subtask label that prefixes all output lines.
+
+        Use None to clear the label.
+        """
+        _task_context.label = label
 
     @staticmethod
     def pipeline_start(prompt, steps):
@@ -72,12 +129,12 @@ class Display:
 
     @staticmethod
     def agent_proposal(num, model, preview):
-        preview_clean = preview.replace("\n", " ")[:150]
+        preview_clean = _skip_preamble(preview).replace("\n", " ")[:150]
         _print(f"   +-- Agent {num} ({model}): {DIM}{preview_clean}...{RESET}")
 
     @staticmethod
     def agent_critique(num, preview):
-        preview_clean = preview.replace("\n", " ")[:150]
+        preview_clean = _skip_preamble(preview).replace("\n", " ")[:150]
         _print(f"   |-- Agent {num} critique: {DIM}{preview_clean}...{RESET}")
 
     @staticmethod
@@ -93,6 +150,34 @@ class Display:
     @staticmethod
     def step_complete(func_name, result):
         _print(f"   {GREEN}v{RESET} {func_name} complete")
+
+    @staticmethod
+    def step_summary(func_name, result):
+        """Show a brief summary of a step's output."""
+        # Show issue counts for review/devil/lint/typecheck
+        critical = result.get("critical_count", 0)
+        warning = result.get("warning_count", 0)
+        suggestion = result.get("suggestion_count", 0)
+
+        if critical or warning or suggestion:
+            parts = []
+            if critical:
+                parts.append(f"{RED}{critical} critical{RESET}")
+            if warning:
+                parts.append(f"{YELLOW}{warning} warnings{RESET}")
+            if suggestion:
+                parts.append(f"{DIM}{suggestion} suggestions{RESET}")
+            _print(f"   Issues: {', '.join(parts)}")
+
+        # Show content preview (first 3 meaningful lines)
+        content = result.get("content", "")
+        if content:
+            lines = [l.strip() for l in content.strip().split("\n") if l.strip()]
+            preview_lines = lines[:3]
+            for line in preview_lines:
+                _print(f"   {DIM}{line[:120]}{RESET}")
+            if len(lines) > 3:
+                _print(f"   {DIM}... ({len(lines) - 3} more lines){RESET}")
 
     @staticmethod
     def step_error(func_name, error):

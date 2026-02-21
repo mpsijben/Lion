@@ -1,4 +1,4 @@
-# Lion Configuration - Phase 1 (MVP)
+# Lion Configuration - Phase 1 (MVP) + Layer 2 (Context Ecosystem)
 
 [general]
 default_profile = "premium"
@@ -16,3 +16,26 @@ low_signals = ["fix", "bug", "typo", "rename", "change", "update", "move", "dele
 high_pipeline = "pride(3)"
 medium_pipeline = "pride(2)"
 low_pipeline = ""
+
+# Layer 2: Context Ecosystem Configuration
+[context]
+# Default context mode: auto | minimal | standard | rich
+# - minimal: no extra context (current behavior)
+# - standard: reasoning + alternatives + uncertainties + confidence
+# - rich: + assumptions + risks + beliefs + questions
+# - auto: select based on pipeline complexity
+default_mode = "auto"
+
+# Token budget limits
+max_context_tokens_per_step = 4000    # Max context per pipeline step
+max_total_context_tokens = 15000      # Max for entire pipeline run
+
+# Archaeology: search previous runs for relevant context
+archaeology = true
+archaeology_max_results = 3           # Max previous runs to include
+archaeology_max_tokens = 500          # Max tokens for history context
+archaeology_max_age_days = 90         # Ignore runs older than this
+
+# Auto-distill: automatically compress when budget exceeded
+auto_distill = true
+distill_provider = "gemini"           # Use cheap provider for compression

@@ -31,11 +31,263 @@ class TestFunctionsRegistry:
         assert "create_test" in FUNCTIONS
         assert "lint" in FUNCTIONS
         assert "typecheck" in FUNCTIONS
+        assert "devil" in FUNCTIONS
+        assert "future" in FUNCTIONS
+        assert "task" in FUNCTIONS
 
     def test_all_functions_are_callable(self):
         """Test that all registered functions are callable."""
         for name, func in FUNCTIONS.items():
             assert callable(func), f"{name} should be callable"
+
+
+class TestPridePrompts:
+    """Tests for pride function prompts."""
+
+    def test_converge_prompt_prevents_file_operations(self):
+        """Test that CONVERGE_PROMPT tells the agent not to ask for file permissions."""
+        from lion.functions.pride import CONVERGE_PROMPT
+        assert "TEXT PLAN only" in CONVERGE_PROMPT
+        assert "Do NOT ask for file permissions" in CONVERGE_PROMPT
+        assert "Do NOT try to write" in CONVERGE_PROMPT
+
+    def test_implement_prompt_includes_deliberation(self):
+        """Test that IMPLEMENT_PROMPT has a deliberation_summary placeholder."""
+        from lion.functions.pride import IMPLEMENT_PROMPT
+        assert "{deliberation_summary}" in IMPLEMENT_PROMPT
+        assert "DELIBERATION CONTEXT" in IMPLEMENT_PROMPT
+
+    def test_implement_passes_deliberation_to_prompt(self, temp_run_dir, sample_config):
+        """Test that _implement() includes deliberation context in the prompt."""
+        from lion.functions.pride import _implement
+        from lion.memory import SharedMemory, MemoryEntry
+
+        memory = SharedMemory(temp_run_dir)
+        memory.write(MemoryEntry(
+            timestamp=1.0,
+            phase="propose",
+            agent="agent_1",
+            type="proposal",
+            content="Use FastAPI for the REST endpoint",
+        ))
+
+        mock_agent = MagicMock()
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.content = "Implementation done"
+        mock_result.tokens_used = 500
+        mock_result.model = "claude"
+        mock_agent.implement.return_value = mock_result
+
+        with patch("lion.functions.pride.Display"):
+            _implement(mock_agent, "Build REST API", "Use FastAPI", "/tmp", memory)
+
+        # Check that the prompt passed to implement() contains deliberation
+        call_args = mock_agent.implement.call_args
+        prompt_sent = call_args[0][0]
+        assert "FastAPI" in prompt_sent
+        assert "DELIBERATION CONTEXT" in prompt_sent
+
+
+class TestExtractOneLiner:
+    """Tests for _extract_one_liner function."""
+
+    def test_skips_markdown_headers(self):
+        from lion.functions.pride import _extract_one_liner
+        content = "# My Proposal\n## Architecture\nUse FastAPI with PostgreSQL for the backend."
+        result = _extract_one_liner(content)
+        assert "Use FastAPI" in result
+        assert "#" not in result
+
+    def test_skips_table_rows(self):
+        from lion.functions.pride import _extract_one_liner
+        content = "## Approach\n| Decision | Choice | Rationale |\n|----------|--------|-----------|\nI propose using FastAPI."
+        result = _extract_one_liner(content)
+        assert "|" not in result
+        assert "FastAPI" in result
+
+    def test_skips_bold_bullets(self):
+        from lion.functions.pride import _extract_one_liner
+        content = "## Plan\n- **Step 1**: Do something\nThis proposal focuses on building a REST API."
+        result = _extract_one_liner(content)
+        assert "REST API" in result
+
+    def test_skips_ai_preamble(self):
+        from lion.functions.pride import _extract_one_liner
+        content = "Now I have a complete understanding of the codebase. Here's my proposed approach for implementing...\n\nAPPROACH: Use FastAPI with PostgreSQL"
+        result = _extract_one_liner(content)
+        assert "Now I have" not in result
+
+    def test_prefers_structured_keywords(self):
+        from lion.functions.pride import _extract_one_liner
+        content = "Some preamble text.\nAPPROACH: Build a REST API with FastAPI\nMore details here."
+        result = _extract_one_liner(content)
+        assert "Build a REST API" in result
+
+    def test_skips_various_preambles(self):
+        from lion.functions.pride import _extract_one_liner
+        preambles = [
+            "I have analyzed the codebase and here is what I found.",
+            "Let me provide my analysis of the code.",
+            "After reviewing the code, I've found several issues.",
+            "Based on my analysis of the project structure.",
+            "I've reviewed the existing implementation.",
+        ]
+        for preamble in preambles:
+            content = f"{preamble}\nThe actual meaningful content here."
+            result = _extract_one_liner(content)
+            assert result == "The actual meaningful content here."
+
+    def test_truncates_long_lines(self):
+        from lion.functions.pride import _extract_one_liner
+        content = "A" * 200
+        result = _extract_one_liner(content)
+        assert len(result) <= 104  # 100 + "..."
+
+    def test_fallback_on_no_prose(self):
+        from lion.functions.pride import _extract_one_liner
+        content = "# Header\n## Subheader\n---"
+        result = _extract_one_liner(content)
+        assert "..." in result
+
+
+class TestExtractDecisionSummary:
+    """Tests for _extract_decision_summary function."""
+
+    def test_extracts_decision_line(self):
+        from lion.functions.pride import _extract_decision_summary
+        plan = "# PLAN\n\nDECISION: Use FastAPI with JWT auth\n\nTASKS:\n1. Build endpoint"
+        result = _extract_decision_summary(plan)
+        assert "Use FastAPI with JWT auth" in result
+
+    def test_extracts_markdown_decision(self):
+        from lion.functions.pride import _extract_decision_summary
+        plan = "# FINAL PLAN\n\n## DECISION: Simple FastAPI Login API with UUID Tokens\n\nTASKS:"
+        result = _extract_decision_summary(plan)
+        assert "Simple FastAPI" in result
+
+    def test_skips_header_in_fallback(self):
+        from lion.functions.pride import _extract_decision_summary
+        plan = "# FINAL SYNTHESIZED PLAN\nUse approach A because it is simpler."
+        result = _extract_decision_summary(plan)
+        assert "#" not in result
+        assert "approach A" in result
+
+    def test_handles_no_decision_line(self):
+        from lion.functions.pride import _extract_decision_summary
+        plan = "# Plan\n---\nJust do it."
+        result = _extract_decision_summary(plan)
+        assert "Just do it" in result
+
+    def test_truncates_long_decision(self):
+        from lion.functions.pride import _extract_decision_summary
+        plan = "DECISION: " + "x" * 200
+        result = _extract_decision_summary(plan)
+        assert len(result) <= 154  # 150 + "..."
+
+    def test_skips_preamble_in_fallback(self):
+        from lion.functions.pride import _extract_decision_summary
+        plan = "Now I have a complete picture. Let me create the final plan.\nUse FastAPI for the backend."
+        result = _extract_decision_summary(plan)
+        assert "Now I have" not in result
+        assert "FastAPI" in result
+
+    def test_decision_on_next_line(self):
+        from lion.functions.pride import _extract_decision_summary
+        plan = "# PLAN\n\nDECISION:\nUse FastAPI with JWT auth for the backend\n\nTASKS:"
+        result = _extract_decision_summary(plan)
+        assert "FastAPI" in result
+
+
+class TestTaskFunction:
+    """Tests for task decomposition."""
+
+    def test_parse_subtasks(self):
+        from lion.functions.task import _parse_subtasks
+        content = """SUBTASK 1: Build user model
+DESCRIPTION: Create the User model with SQLAlchemy
+FILES: models/user.py, models/__init__.py
+DEPENDS_ON: none
+PARALLEL: yes
+
+SUBTASK 2: Build auth endpoints
+DESCRIPTION: Create login and register endpoints
+FILES: routes/auth.py
+DEPENDS_ON: 1
+PARALLEL: no"""
+        result = _parse_subtasks(content, 10)
+        assert len(result) == 2
+        assert result[0]["title"] == "Build user model"
+        assert result[0]["parallel"] is True
+        assert result[0]["depends_on"] == []
+        assert result[1]["depends_on"] == [1]
+        assert "models/user.py" in result[0]["files"]
+
+    def test_parse_subtasks_respects_max(self):
+        from lion.functions.task import _parse_subtasks
+        content = """SUBTASK 1: Task A
+DESCRIPTION: Do A
+FILES: a.py
+DEPENDS_ON: none
+PARALLEL: yes
+
+SUBTASK 2: Task B
+DESCRIPTION: Do B
+FILES: b.py
+DEPENDS_ON: none
+PARALLEL: yes
+
+SUBTASK 3: Task C
+DESCRIPTION: Do C
+FILES: c.py
+DEPENDS_ON: 1, 2
+PARALLEL: no"""
+        result = _parse_subtasks(content, 2)
+        assert len(result) == 2
+
+    def test_parse_subtasks_empty(self):
+        from lion.functions.task import _parse_subtasks
+        result = _parse_subtasks("No structured output here", 5)
+        assert result == []
+
+
+class TestBuildDependencyLevels:
+    """Tests for dependency level grouping."""
+
+    def test_independent_tasks(self):
+        from lion.pipeline import _build_dependency_levels
+        subtasks = [
+            {"title": "A", "depends_on": [], "parallel": True},
+            {"title": "B", "depends_on": [], "parallel": True},
+        ]
+        levels = _build_dependency_levels(subtasks)
+        assert len(levels) == 1
+        assert set(levels[0]) == {0, 1}
+
+    def test_dependent_tasks(self):
+        from lion.pipeline import _build_dependency_levels
+        subtasks = [
+            {"title": "A", "depends_on": []},
+            {"title": "B", "depends_on": [1]},  # depends on task 1 (0-indexed: 0)
+            {"title": "C", "depends_on": [2]},  # depends on task 2 (0-indexed: 1)
+        ]
+        levels = _build_dependency_levels(subtasks)
+        assert len(levels) == 3
+        assert levels[0] == [0]
+        assert levels[1] == [1]
+        assert levels[2] == [2]
+
+    def test_mixed_dependencies(self):
+        from lion.pipeline import _build_dependency_levels
+        subtasks = [
+            {"title": "A", "depends_on": []},
+            {"title": "B", "depends_on": []},
+            {"title": "C", "depends_on": [1, 2]},
+        ]
+        levels = _build_dependency_levels(subtasks)
+        assert len(levels) == 2
+        assert set(levels[0]) == {0, 1}
+        assert levels[1] == [2]
 
 
 class TestReviewFunction:

@@ -24,18 +24,95 @@ lion '"Fix the login bug"'
 
 ---
 
+## Model selectie
+
+Alle functies die een provider accepteren ondersteunen dot-syntax voor model selectie:
+
+```bash
+# Claude modellen
+pride(claude)           # Default Claude model
+pride(claude.haiku)     # Claude Haiku (goedkoopst, snelst)
+pride(claude.sonnet)    # Claude Sonnet
+pride(claude.opus)      # Claude Opus (duurste, slimst)
+
+# Gemini modellen
+pride(gemini)           # Default Gemini model
+pride(gemini.flash)     # Gemini Flash (goedkoop)
+pride(gemini.pro)       # Gemini Pro
+
+# Mixed modellen in een pride
+pride(claude.haiku, claude.haiku, gemini.flash)  # 3 agents, mixed
+
+# Model selectie bij andere functies
+review(claude.haiku)         # Goedkope review
+devil(claude.opus)           # Slimste devil's advocate
+future(6m, gemini.flash)     # Goedkope future review
+task(5, claude.haiku)        # Goedkope taak decompositie
+```
+
+De config default kan ook een model bevatten:
+
+```toml
+[providers]
+default = "claude.haiku"    # Altijd haiku gebruiken
+```
+
+---
+
 ## Pipeline functies
 
 Functies worden geketend met `->`, elke functie krijgt de output van de vorige als input.
+
+### Feedback operator: `<->`
+
+De `<->` operator maakt een feedback-loop: als de stap issues vindt, wordt de laatste producer (bijv. pride) opnieuw gedraaid met de feedback als extra context. Daarna wordt de feedback-stap opnieuw gedraaid om te verifieren. Max 2 rondes.
+
+```bash
+# <-> = re-run producer met HETZELFDE aantal agents
+lion '"Build auth" -> pride(5) <-> review()'
+
+# <N-> = re-run producer met N agents (goedkoper)
+lion '"Build auth" -> pride(5) <1-> review()'
+
+# Mix van operatoren
+lion '"Build auth" -> pride(5) <1-> review() <-> devil() -> test() -> pr()'
+```
+
+Semantiek:
+- `<->` stuurt feedback terug naar de laatste producer (pride of test)
+- De producer draait opnieuw met de feedback + alle eerdere deliberatie-context
+- `<N->` specificeert hoeveel agents de re-run gebruikt
+- Als de feedback-stap 0 issues vindt: geen re-run, pipeline gaat gewoon door
+
+### task(n) -- Taak decompositie
+
+Splitst een grote taak op in kleinere, implementeerbare subtaken. Elke subtaak doorloopt de rest van de pipeline onafhankelijk.
+
+```bash
+lion '"Build e-commerce platform" -> task() -> pride(3) -> test()'      # Max 5 subtaken (default)
+lion '"Build e-commerce platform" -> task(10) -> pride(3) -> test()'    # Max 10 subtaken
+lion '"Build e-commerce platform" -> task(3) -> pride(3) -> test()'     # Max 3 subtaken
+```
+
+Hoe het werkt:
+1. AI analyseert de taak en splitst op in concrete subtaken
+2. Subtaken worden gegroepeerd op dependency (onafhankelijke taken kunnen parallel)
+3. Elke subtaak doorloopt alles na `task()` in de pipeline (bijv. `pride(3) -> test()`)
+
+Ideaal voor:
+- Grote features die meerdere componenten bevatten
+- Taken die te groot zijn voor een enkele pride() sessie
+- Projecten waar je gestructureerde voortgang wilt zien
 
 ### pride(n) -- Multi-agent deliberatie
 
 Het hart van Lion. Start N agents die onafhankelijk een aanpak voorstellen, elkaars voorstellen bekritiseren, convergeren tot een plan, en het plan implementeren.
 
 ```bash
-lion '"Build auth system" -> pride(3)'              # 3 Claude agents
-lion '"Build auth system" -> pride(5)'              # 5 agents (max 5)
-lion '"Build auth system" -> pride(claude, gemini)' # Mixed LLMs (toekomst)
+lion '"Build auth system" -> pride(3)'                        # 3 agents (default provider)
+lion '"Build auth system" -> pride(5)'                        # 5 agents (max 5)
+lion '"Build auth system" -> pride(claude, gemini)'           # Mixed providers
+lion '"Build auth system" -> pride(claude.haiku, claude.haiku)' # 2 haiku agents (goedkoop)
 ```
 
 Fases intern:
@@ -118,21 +195,24 @@ lion '"Build API" -> pride(3) -> pr()'                          # Auto branch na
 lion '"Build API" -> pride(3) -> pr("feature/stripe-checkout")' # Specifieke branch
 ```
 
-### devil() -- Devil's advocate (toekomst)
+### devil() -- Devil's advocate
 
 Daagt de consensus uit. Geen bugs zoeken (dat doet review), maar beslissingen, aannames en architectuurkeuzes challengen.
 
 ```bash
 lion '"Build payment system" -> pride(3) -> devil()'
+lion '"Build payment system" -> pride(3) -> devil(aggressive)'  # Extra kritisch
+lion '"Build payment system" -> pride(3) -> devil(gemini)'      # Met specifieke provider
 ```
 
-### future(Nm) -- Time-travel review (toekomst)
+### future(Nm) -- Time-travel review
 
 Evalueert de code vanuit het perspectief van een developer N maanden in de toekomst.
 
 ```bash
-lion '"Build API" -> pride(3) -> future(6m)'   # 6 maanden
-lion '"Build API" -> pride(3) -> future(1y)'   # 1 jaar
+lion '"Build API" -> pride(3) -> future(6m)'           # 6 maanden
+lion '"Build API" -> pride(3) -> future(1y)'           # 1 jaar
+lion '"Build API" -> pride(3) -> future(6m, gemini)'   # Met specifieke provider
 ```
 
 ### audit() -- Security audit (toekomst)
@@ -180,6 +260,11 @@ lion '"Refactor the API routes" -> pride(2)'
 lion '"Build auth system" -> pride(5) -> devil() -> review() -> test() -> pr("feature/auth")'
 ```
 
+### Met feedback loops
+```bash
+lion '"Build auth system" -> pride(5) <1-> review() <-> devil() -> test() -> pr()'
+```
+
 ### Met test generatie
 ```bash
 lion '"Build payment API" -> pride(3) -> create_tests() -> test() -> pr()'
@@ -193,6 +278,11 @@ lion '"Refactor user module" -> pride(3) -> lint() -> typecheck() -> review()'
 ### Volledige quality pipeline
 ```bash
 lion '"Build checkout flow" -> pride(3) -> create_tests() -> test() -> lint() -> typecheck() -> review() -> pr()'
+```
+
+### Grote taak opsplitsen
+```bash
+lion '"Build e-commerce platform" -> task(5) -> pride(3) -> test() -> pr()'
 ```
 
 ---
@@ -230,6 +320,7 @@ low_pipeline = ""
 
 | Functie | Status |
 |---------|--------|
+| task(n) | Werkt |
 | pride(n) | Werkt |
 | review() | Werkt |
 | test() | Werkt |
@@ -237,8 +328,9 @@ low_pipeline = ""
 | lint() | Werkt |
 | typecheck() | Werkt |
 | pr(branch) | Werkt |
-| devil() | Nog niet gebouwd |
-| future(Nm) | Nog niet gebouwd |
+| devil() | Werkt |
+| future(Nm) | Werkt |
+| `<->` / `<N->` | Werkt |
 | audit() | Nog niet gebouwd |
 | onboard() | Nog niet gebouwd |
 | Custom patterns | Nog niet gebouwd |

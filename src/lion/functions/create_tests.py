@@ -13,7 +13,7 @@ import concurrent.futures
 from typing import Optional
 
 from ..memory import MemoryEntry
-from ..providers import get_provider
+from ..providers import get_provider, is_provider_name
 from ..display import Display
 from .utils import (
     detect_project_language,
@@ -171,8 +171,6 @@ def _resolve_agents(step, config):
     - Non-agent string args (changed, all, file paths): ignored here
     """
     default_provider = config.get("providers", {}).get("default", "claude")
-    known_providers = {"claude", "gemini", "codex"}
-
     if not step.args:
         return [get_provider(default_provider, config)]
 
@@ -184,7 +182,7 @@ def _resolve_agents(step, config):
             n = int(s)
             n = max(1, min(n, 5))
             return [get_provider(default_provider, config) for _ in range(n)]
-        if s in known_providers:
+        if is_provider_name(s):
             agent_args.append(s)
 
     if agent_args:
