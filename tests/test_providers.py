@@ -116,7 +116,8 @@ class TestClaudeProvider:
 
     def test_safe_env_sets_no_recurse(self):
         """Test that _safe_env sets LION_NO_RECURSE."""
-        env = ClaudeProvider._safe_env()
+        provider = ClaudeProvider()
+        env = provider._safe_env()
         assert env["LION_NO_RECURSE"] == "1"
 
     def test_ask_success(self):
@@ -268,7 +269,8 @@ class TestGeminiProvider:
 
     def test_safe_env_sets_no_recurse(self):
         """Test that _safe_env sets LION_NO_RECURSE."""
-        env = GeminiProvider._safe_env()
+        provider = GeminiProvider()
+        env = provider._safe_env()
         assert env["LION_NO_RECURSE"] == "1"
 
     def test_ask_success(self):

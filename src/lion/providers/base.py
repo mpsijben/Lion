@@ -1,7 +1,7 @@
 """Abstract provider interface and result types."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -13,6 +13,8 @@ class AgentResult:
     duration_seconds: float
     success: bool
     error: Optional[str] = None
+    session_id: Optional[str] = None
+    files_changed: list[str] = field(default_factory=list)
 
 
 class Provider(ABC):

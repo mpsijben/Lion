@@ -8,6 +8,10 @@ from .base import Provider, AgentResult
 
 
 class ClaudeProvider(Provider):
+    """Stateless Claude CLI provider.
+
+    All calls are independent - no session state is maintained.
+    """
     name = "claude"
 
     def __init__(self, model=None):
@@ -15,15 +19,23 @@ class ClaudeProvider(Provider):
         if model:
             self.name = f"claude.{model}"
 
-    @staticmethod
-    def _safe_env():
+    def _safe_env(self):
         """Create env that prevents recursive lion calls from child processes."""
         env = os.environ.copy()
         env["LION_NO_RECURSE"] = "1"
         return env
 
-    def ask(self, prompt, system_prompt="", cwd="."):
-        """Use claude -p for non-interactive single-turn queries."""
+    def ask(self, prompt: str, system_prompt: str = "", cwd: str = ".") -> AgentResult:
+        """Use claude -p for non-interactive single-turn queries.
+
+        Args:
+            prompt: The question/prompt
+            system_prompt: Optional system prompt
+            cwd: Working directory
+
+        Returns:
+            AgentResult with response
+        """
         cmd = ["claude", "-p", prompt, "--output-format", "json"]
         if self.model_override:
             cmd.extend(["--model", self.model_override])
@@ -74,8 +86,16 @@ class ClaudeProvider(Provider):
         full_prompt = f"{prompt}\n\nFILES:\n" + "\n".join(file_contents)
         return self.ask(full_prompt, system_prompt, cwd)
 
-    def implement(self, prompt, cwd="."):
-        """Use claude -p to make actual file changes."""
+    def implement(self, prompt: str, cwd: str = ".") -> AgentResult:
+        """Use claude -p to make actual file changes.
+
+        Args:
+            prompt: The implementation prompt
+            cwd: Working directory
+
+        Returns:
+            AgentResult with response
+        """
         impl_prompt = (
             f"{prompt}\n\n"
             "IMPORTANT: Make the actual code changes. Edit the files directly. "
@@ -115,7 +135,8 @@ class ClaudeProvider(Provider):
                 error=result.stderr
             )
 
-        return self._parse_output(result.stdout, duration)
+        parsed = self._parse_output(result.stdout, duration)
+        return parsed
 
     def _parse_output(self, stdout, duration):
         """Parse claude -p --output-format json output.
@@ -128,22 +149,23 @@ class ClaudeProvider(Provider):
             # JSON array format - find the result entry
             if isinstance(output, list):
                 for entry in reversed(output):
-                    if isinstance(entry, dict) and entry.get("type") == "result":
-                        return AgentResult(
-                            content=entry.get("result", ""),
-                            model=self.name,
-                            tokens_used=0,
-                            duration_seconds=duration,
-                            success=not entry.get("is_error", False),
-                            error=entry.get("result", "") if entry.get("is_error") else None,
-                        )
+                    if isinstance(entry, dict):
+                        if entry.get("type") == "result":
+                            return AgentResult(
+                                content=entry.get("result", ""),
+                                model=self.name,
+                                tokens_used=0,
+                                duration_seconds=duration,
+                                success=not entry.get("is_error", False),
+                                error=entry.get("result", "") if entry.get("is_error") else None,
+                            )
                 # No result entry found, use last entry's content
                 if output:
                     last = output[-1]
                     content = last.get("result", last.get("content", str(last)))
                     return AgentResult(
                         content=content, model=self.name, tokens_used=0,
-                        duration_seconds=duration, success=True
+                        duration_seconds=duration, success=True,
                     )
 
             # Single object format (fallback)
@@ -151,7 +173,7 @@ class ClaudeProvider(Provider):
                 return AgentResult(
                     content=output.get("result", stdout),
                     model=self.name, tokens_used=0,
-                    duration_seconds=duration, success=True
+                    duration_seconds=duration, success=True,
                 )
         except json.JSONDecodeError:
             pass
@@ -159,5 +181,5 @@ class ClaudeProvider(Provider):
         # Raw text fallback
         return AgentResult(
             content=stdout, model=self.name, tokens_used=0,
-            duration_seconds=duration, success=True
+            duration_seconds=duration, success=True,
         )

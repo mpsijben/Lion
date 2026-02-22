@@ -10,11 +10,16 @@ import sys
 def _read_tty(prompt_text: str) -> str:
     """Read input from /dev/tty to bypass stdout redirection."""
     try:
-        with open("/dev/tty", "w") as tty_out:
-            tty_out.write(prompt_text)
-            tty_out.flush()
-        with open("/dev/tty", "r") as tty_in:
-            return tty_in.readline().strip()
+        with open("/dev/tty", "r+") as tty:
+            tty.write(prompt_text)
+            tty.flush()
+            line = tty.readline()
+            if line == "":
+                raise RuntimeError(
+                    "No interactive input available from /dev/tty. "
+                    "Run Lion in an interactive terminal or choose a non-interactive fallback."
+                )
+            return line.strip()
     except OSError:
         raise RuntimeError(
             "Cannot read from /dev/tty - Lion requires an interactive terminal for escalation. "
@@ -86,7 +91,11 @@ class Escalation:
         options.append("Skip this task")
         options.append("Take over in Claude Code")
 
-        choice = Escalation.ask_choice("How should we proceed?", options)
+        try:
+            choice = Escalation.ask_choice("How should we proceed?", options)
+        except RuntimeError as e:
+            _print_tty(f"   Interactive input unavailable ({e}). Defaulting to takeover.")
+            return "takeover"
 
         if choice == 0:
             hint = Escalation.ask_text("Your hint:")
@@ -124,7 +133,11 @@ class Escalation:
         options.append("Let the pride try one more round")
         options.append("Take over manually in Claude Code")
 
-        choice = Escalation.ask_choice("Which approach should we use?", options)
+        try:
+            choice = Escalation.ask_choice("Which approach should we use?", options)
+        except RuntimeError as e:
+            _print_tty(f"   Interactive input unavailable ({e}). Defaulting to takeover.")
+            return "takeover"
 
         if choice < len(proposals):
             return f"use_proposal:{choice}"
@@ -145,7 +158,11 @@ class Escalation:
             _print_tty(f"   Details: {details}")
         _print_tty("")
 
-        choice = Escalation.ask_choice("Proceed?", ["Yes, continue", "No, cancel"])
+        try:
+            choice = Escalation.ask_choice("Proceed?", ["Yes, continue", "No, cancel"])
+        except RuntimeError as e:
+            _print_tty(f"   Interactive input unavailable ({e}). Defaulting to cancel.")
+            return False
         return choice == 0
 
     @staticmethod
@@ -161,14 +178,18 @@ class Escalation:
         _print_tty(f"   Context: {context}")
         _print_tty(f"   Reason: {confidence_reason}\n")
 
-        choice = Escalation.ask_choice(
-            "How should we proceed?",
-            [
-                "Proceed anyway",
-                "Provide guidance",
-                "Take over in Claude Code"
-            ]
-        )
+        try:
+            choice = Escalation.ask_choice(
+                "How should we proceed?",
+                [
+                    "Proceed anyway",
+                    "Provide guidance",
+                    "Take over in Claude Code"
+                ]
+            )
+        except RuntimeError as e:
+            _print_tty(f"   Interactive input unavailable ({e}). Defaulting to takeover.")
+            return "takeover"
 
         if choice == 0:
             return "proceed"

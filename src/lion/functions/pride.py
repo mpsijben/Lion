@@ -17,6 +17,10 @@ import concurrent.futures
 import time
 from dataclasses import asdict
 
+# Re-export implementation functions for backward compatibility
+# These were moved to impl.py but tests still import from pride.py
+from .impl import IMPLEMENT_PROMPT, _build_implement_context
+
 from ..memory import SharedMemory, MemoryEntry
 from ..providers import get_provider
 from ..display import Display
@@ -43,6 +47,61 @@ from ..context import (
 # Legacy prompts for backwards compatibility (used in minimal mode)
 PROPOSE_PROMPT = PROPOSE_PROMPT_MINIMAL
 
+# AI preamble patterns to skip (case-insensitive check)
+# Used by _extract_one_liner and _extract_decision_summary
+_PREAMBLE_STARTS = (
+    "now i have",
+    "i have analyzed",
+    "i have a complete",
+    "i have a comprehensive",
+    "i've analyzed",
+    "i've reviewed",
+    "i now have",
+    "let me ",
+    "here's my ",
+    "here's ",
+    "here is my ",
+    "here is ",
+    "after analyzing",
+    "after reviewing",
+    "based on my analysis",
+    "based on my review",
+    "based on ",
+    "i'll provide",
+    "i will provide",
+    "perfect.",
+    "perfect,",
+    "perfect!",
+    "perfect -",
+    "great.",
+    "great,",
+    "great!",
+    "great -",
+    "excellent.",
+    "excellent,",
+    "excellent!",
+    "understood.",
+    "understood,",
+    "understood!",
+    "okay,",
+    "okay.",
+    "ok,",
+    "ok.",
+    "sure,",
+    "sure.",
+    "absolutely.",
+    "absolutely,",
+    "alright,",
+    "alright.",
+    "thank you",
+    "thanks for",
+    "i understand",
+    "i'll analyze",
+    "i will analyze",
+    "i can see",
+    "looking at",
+)
+
 CRITIQUE_PROMPT = """You are Agent {agent_num} reviewing proposals from your team.
 
 TASK: {prompt}
@@ -63,19 +122,7 @@ Start DIRECTLY with your analysis -- no preamble."""
 
 CONVERGE_PROMPT = CONVERGE_PROMPT_MINIMAL
 
-IMPLEMENT_PROMPT = """Implement this plan completely.
 
-OVERALL GOAL: {prompt}
-
-PLAN:
-{plan}
-
-DELIBERATION CONTEXT:
-{deliberation_summary}
-
-Make all the actual code changes. Create and edit files as needed.
-Be thorough and implement the full plan. Follow the PLAN above closely.
-If the PLAN seems incomplete, use the DELIBERATION CONTEXT for guidance."""
 
 
 def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None):
@@ -145,30 +192,24 @@ def execute_pride(prompt, previous, step, memory, config, cwd, cost_manager=None
         Display.phase("critique", "Agents review each other's proposals...")
         critiques = _parallel_critique(
             agents, prompt, proposals, packages, cwd, memory, context_mode,
-            agent_lenses
+            agent_lenses, config
         )
 
     # PHASE 3: CONVERGE (single agent)
     Display.phase("converge", "Synthesizing into final plan...")
     plan, confidence_map = _converge(
         agents[0], prompt, memory, cwd, packages, context_mode,
-        agent_lenses, proposals, critiques
+        agent_lenses, proposals, critiques, config
     )
 
     # Extract the decision from the converged plan
     final_decision = _extract_decision_summary(plan)
 
-    # PHASE 4: IMPLEMENT (single agent, writes files)
-    Display.phase("implement", "Building the solution...")
-    implementation = _implement(agents[0], prompt, plan, cwd, memory)
-
     return {
         "success": True,
         "plan": plan,
-        "code": implementation.get("code", ""),
         "decisions": _extract_decisions(memory),
-        "files_changed": implementation.get("files_changed", []),
-        "tokens_used": 0,
+        "tokens_used": 0, # TODO: Track tokens
         "deliberation_summary": memory.format_for_prompt(memory.read_all()),
         "agent_summaries": agent_summaries,
         "final_decision": final_decision,
@@ -182,31 +223,38 @@ def _resolve_agents(step, config, prompt=""):
 
     Returns (agents, lenses) where lenses is a list of Lens|None per agent.
     """
-    default_provider = config.get("providers", {}).get("default", "claude")
+    default_provider_name = config.get("providers", {}).get("default", "claude")
     lenses_kwarg = step.kwargs.get("lenses")
+    
+    # Get active profile, if any
+    profile_name = config.get("profile")
+    profile = config.get("profiles", {}).get(profile_name, {})
+
+    explicit_agents = []
+    agent_lenses = []
 
     if step.args:
         first_arg = step.args[0]
         # Explicit providers (with optional lens): pride(claude::arch, gemini::sec)
         if isinstance(first_arg, str) and not str(first_arg).isdigit():
-            agents = []
-            agent_lenses = []
             for arg in step.args:
                 if isinstance(arg, str) and "::" in arg:
                     provider_str, lens_str = arg.split("::", 1)
-                    agents.append(get_provider(provider_str.strip(), config))
+                    explicit_agents.append(get_provider(provider_str.strip(), config))
                     lens = get_lens(lens_str.strip())
                     agent_lenses.append(lens)
                 else:
-                    agents.append(get_provider(str(arg), config))
+                    explicit_agents.append(get_provider(str(arg), config))
                     agent_lenses.append(None)
-
-            return agents, agent_lenses
+            return explicit_agents, agent_lenses
 
         # Number of agents: pride(3)
         n = int(first_arg)
-        n = max(1, min(n, 5))  # Clamp between 1 and 5
-        agents = [get_provider(default_provider, config) for _ in range(n)]
+        n = max(1, min(n, config.get("general", {}).get("max_pride_size", 5)))
+
+        # Use profile for propose agents if available, otherwise default
+        propose_model = profile.get("propose", default_provider_name)
+        agents = [get_provider(propose_model, config) for _ in range(n)]
 
         # Handle lenses: auto
         if lenses_kwarg == "auto":
@@ -217,9 +265,11 @@ def _resolve_agents(step, config, prompt=""):
 
         return agents, agent_lenses
 
-    # Default: 3 agents with default provider
+    # Default: 3 agents with default provider or profile setting
     n = 3
-    agents = [get_provider(default_provider, config) for _ in range(n)]
+    n = max(1, min(n, config.get("general", {}).get("max_pride_size", 5)))
+    propose_model = profile.get("propose", default_provider_name)
+    agents = [get_provider(propose_model, config) for _ in range(n)]
 
     if lenses_kwarg == "auto":
         lens_codes = auto_assign_lenses(prompt, n)
@@ -485,16 +535,23 @@ def _parallel_propose(agents, prompt, cwd, memory, context_mode, shared_context=
 
 
 def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context_mode,
-                       agent_lenses=None):
+                       agent_lenses=None, config=None):
     """Run critique phase in parallel with context awareness."""
     critiques = []
     adapter = ContextAdapter()
     agent_lenses = agent_lenses or [None] * len(agents)
     any_lensed = any(l is not None for l in agent_lenses)
 
+    config = config or {} # Ensure config is not None
+    profile_name = config.get("profile")
+    profile = config.get("profiles", {}).get(profile_name, {})
+    default_provider_name = config.get("providers", {}).get("default", "claude")
+    critique_model = profile.get("critique", default_provider_name)
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(agents)) as executor:
         futures = {}
-        for i, agent in enumerate(agents):
+        for i, agent_placeholder in enumerate(agents): # agent_placeholder is the propose agent
+            critique_agent = get_provider(critique_model, config)
             lens = agent_lenses[i] if i < len(agent_lenses) else None
 
             # Find this agent's proposal and package
@@ -539,7 +596,7 @@ def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context
                 # Format using ContextAdapter
                 other_proposals_formatted = adapter.format(
                     other_packages,
-                    target_provider=agent.name,
+                    target_provider=critique_agent.name,
                     mode=context_mode
                 )
 
@@ -584,7 +641,7 @@ def _parallel_critique(agents, prompt, proposals, packages, cwd, memory, context
                         other_proposals_formatted=other_proposals_formatted,
                     )
 
-            futures[executor.submit(agent.ask, critique_prompt, "", cwd)] = i
+            futures[executor.submit(critique_agent.ask, critique_prompt, "", cwd)] = i
 
         for future in concurrent.futures.as_completed(futures):
             i = futures[future]
@@ -667,12 +724,21 @@ def _build_converge_context(proposals, critiques, packages, max_chars=8000):
     return result
 
 
-def _converge(lead_agent, prompt, memory, cwd, packages, context_mode,
-              agent_lenses=None, proposals=None, critiques=None):
+def _converge(lead_agent_placeholder, prompt, memory, cwd, packages, context_mode,
+              agent_lenses=None, proposals=None, critiques=None, config=None):
     """Synthesize all proposals and critiques into a plan with confidence weighting."""
     agent_lenses = agent_lenses or []
     critiques = critiques or []
     any_lensed = any(l is not None for l in agent_lenses)
+
+    config = config or {} # Ensure config is not None
+    profile_name = config.get("profile")
+    profile = config.get("profiles", {}).get(profile_name, {})
+    default_provider_name = config.get("providers", {}).get("default", "claude")
+    converge_model = profile.get("converge", default_provider_name)
+    
+    # Create the actual lead agent for convergence
+    lead_agent = get_provider(converge_model, config)
 
     # Build focused context instead of raw memory dump
     if proposals:
@@ -733,11 +799,17 @@ def _converge(lead_agent, prompt, memory, cwd, packages, context_mode,
             Display.step_error("converge", f"Empty response (attempt {attempt + 1}/3), retrying...")
 
     if not result or not result.content or not result.content.strip():
-        # Fallback: use proposals as plan
-        proposals = [e for e in all_entries if e.phase == "propose"]
+        # Fallback: use first proposal as plan
         fallback = "DECISION: Using first agent's proposal as plan (converge failed).\n\nTASKS:\n"
         if proposals:
-            fallback += proposals[0].content
+            # proposals passed directly
+            fallback += proposals[0].get("content", "")[:5000]
+        else:
+            # Try reading from memory
+            all_entries = memory.read_all()
+            proposal_entries = [e for e in all_entries if e.phase == "propose"]
+            if proposal_entries:
+                fallback += proposal_entries[0].content[:5000]
         Display.step_error("converge", "All attempts returned empty, using fallback plan")
         content = fallback
     else:
@@ -792,60 +864,6 @@ def _build_belief_summary(packages):
     return "\n".join(summary_parts)
 
 
-def _build_implement_context(memory, max_chars=5000):
-    """Build focused context for implementer - only decisions + warnings.
-
-    The converge plan already contains the full approach. The implementer
-    only needs additional context about hard constraints and warnings
-    that MUST be respected.
-    """
-    entries = memory.read_all()
-    parts = []
-
-    for e in entries:
-        if e.type == "decision":
-            parts.append(f"Decision: {e.content[:2000]}")
-        elif e.phase == "propose" and e.content:
-            sections = extract_sections(e.content)
-            warnings = sections.get("warnings", "")
-            if warnings:
-                agent_label = e.agent or "agent"
-                parts.append(f"{agent_label} warnings: {warnings[:500]}")
-
-    result = "\n\n".join(parts)
-    return result[:max_chars] if result else "(no additional context)"
-
-
-def _implement(lead_agent, prompt, plan, cwd, memory):
-    """Implement the converged plan by writing files."""
-    # Build focused context (decisions + warnings only, not full dump)
-    deliberation_summary = _build_implement_context(memory)
-
-    impl_prompt = IMPLEMENT_PROMPT.format(
-        prompt=prompt,
-        plan=plan,
-        deliberation_summary=deliberation_summary,
-    )
-
-    result = lead_agent.implement(impl_prompt, cwd)
-
-    if not result.success:
-        Display.step_error("implement", result.error or "Implementation failed")
-
-    memory.write(MemoryEntry(
-        timestamp=time.time(),
-        phase="implement",
-        agent="implementer",
-        type="code",
-        content=result.content or "",
-        metadata={"model": result.model},
-    ))
-
-    return {
-        "code": result.content or "",
-        "files_changed": [],
-        "tokens": result.tokens_used,
-    }
 
 
 def _extract_decisions(memory):
@@ -856,57 +874,6 @@ def _extract_decisions(memory):
 
 def _extract_one_liner(content):
     """Extract a concise 1-liner summary from proposal content."""
-    # AI preamble patterns to skip (case-insensitive check)
-    _PREAMBLE_STARTS = (
-        "now i have",
-        "i have analyzed",
-        "i have a complete",
-        "i have a comprehensive",
-        "i've analyzed",
-        "i've reviewed",
-        "i now have",
-        "let me ",
-        "here's my ",
-        "here is my ",
-        "after analyzing",
-        "after reviewing",
-        "based on my analysis",
-        "based on my review",
-        "i'll provide",
-        "i will provide",
-        "perfect.",
-        "perfect,",
-        "perfect!",
-        "perfect -",
-        "great.",
-        "great,",
-        "great!",
-        "great -",
-        "excellent.",
-        "excellent,",
-        "excellent!",
-        "understood.",
-        "understood,",
-        "understood!",
-        "okay,",
-        "okay.",
-        "ok,",
-        "ok.",
-        "sure,",
-        "sure.",
-        "absolutely.",
-        "absolutely,",
-        "alright,",
-        "alright.",
-        "thank you",
-        "thanks for",
-        "i understand",
-        "i'll analyze",
-        "i will analyze",
-        "i can see",
-        "looking at",
-    )
-
     # Look for structured content first: DECISION, APPROACH, PROPOSAL headers
     lines = content.strip().split("\n")
     for line in lines:
@@ -944,37 +911,6 @@ def _extract_one_liner(content):
 
 def _extract_decision_summary(plan):
     """Extract the DECISION line from a converged plan."""
-    _PREAMBLE_STARTS = (
-        "now i have",
-        "i have a complete",
-        "i have a comprehensive",
-        "i've analyzed",
-        "i've reviewed",
-        "i now have",
-        "let me ",
-        "here's ",
-        "here is ",
-        "after analyzing",
-        "after reviewing",
-        "based on ",
-        "perfect.",
-        "perfect,",
-        "perfect!",
-        "great.",
-        "great,",
-        "great!",
-        "excellent.",
-        "excellent,",
-        "understood.",
-        "understood,",
-        "okay,",
-        "okay.",
-        "i understand",
-        "i'll analyze",
-        "looking at",
-        "thank you",
-    )
-
     lines = plan.strip().split("\n")
 
     # First pass: look for explicit DECISION: line
@@ -1012,3 +948,52 @@ def _extract_decision_summary(plan):
             return stripped[:150].rsplit(" ", 1)[0] + "..."
         return stripped
     return "Plan completed"
+
+
+def _implement(agent, prompt, plan, cwd, memory):
+    """Execute implementation using the given agent.
+
+    This is a wrapper function for backward compatibility.
+    Used by tests that import _implement from pride.py.
+
+    Args:
+        agent: Provider agent with implement() method
+        prompt: The original user prompt
+        plan: The converged plan to implement
+        cwd: Working directory
+        memory: SharedMemory instance
+
+    Returns:
+        dict with success, code, files_changed, tokens_used
+    """
+    # Build focused context (decisions + warnings only)
+    deliberation_summary = _build_implement_context(memory)
+
+    impl_prompt = IMPLEMENT_PROMPT.format(
+        prompt=prompt,
+        plan=plan,
+        deliberation_summary=deliberation_summary,
+    )
+
+    Display.phase("implement", "Building the solution...")
+
+    result = agent.implement(impl_prompt, cwd)
+
+    if not result.success:
+        Display.step_error("implement", result.error or "Implementation failed")
+
+    memory.write(MemoryEntry(
+        timestamp=time.time(),
+        phase="implement",
+        agent="implementer",
+        type="code",
+        content=result.content or "",
+        metadata={"model": result.model},
+    ))
+
+    return {
+        "success": result.success,
+        "code": result.content or "",
+        "files_changed": [],  # Will be populated by caller using git status
+        "tokens_used": result.tokens_used,
+    }

@@ -4,21 +4,33 @@ Detects the linter used in the project (ruff, eslint, etc.) and runs
 auto-fix to clean up code style issues.
 """
 
+import re
 import subprocess
 import time
-import os
 from typing import Optional
 
 from ..memory import MemoryEntry
 from ..display import Display
+from ..providers import get_provider
 from .utils import (
     detect_project_language,
     detect_linter,
     LINTER_PATTERNS,
 )
+from .self_heal import self_heal_loop
+
+FIX_LINT_ISSUES_PROMPT = """You are an expert software engineer.
+The linter has identified issues in the codebase.
+
+Your task is to fix ALL issues mentioned by the linter.
+Edit the files directly and be thorough.
+
+LINTER OUTPUT:
+{linter_output}
+"""
 
 
-def execute_lint(prompt, previous, step, memory, config, cwd, cost_manager=None):
+def execute_lint(prompt, previous, step, memory, config, cwd, cost_manager=None) -> dict:
     """Execute linting with auto-fix.
 
     Args:
@@ -33,17 +45,24 @@ def execute_lint(prompt, previous, step, memory, config, cwd, cost_manager=None)
     Returns:
         dict with success, linter, issues_fixed, output, etc.
     """
+    # Defensive null check for previous
+    previous = previous or {}
+
     Display.phase("lint", "Running linter with auto-fix...")
 
     # Parse arguments
     nofix = False
     specific_linter = None
+    # Use step.self_heal as the single source of truth for ^ operator (set by parser)
+    self_heal = step.self_heal if hasattr(step, 'self_heal') else False
+
     if step.args:
         for arg in step.args:
             arg_str = str(arg).lower()
             if arg_str == "nofix" or arg_str == "no_fix":
                 nofix = True
-            elif arg_str in ["ruff", "black", "eslint", "prettier", "biome", "gofmt", "rustfmt", "clippy"]:
+            # Skip ^ since it's handled by parser setting step.self_heal
+            elif arg_str != "^" and arg_str in ["ruff", "black", "eslint", "prettier", "biome", "gofmt", "rustfmt", "clippy"]:
                 specific_linter = arg_str
 
     # Detect language
@@ -80,15 +99,16 @@ def execute_lint(prompt, previous, step, memory, config, cwd, cost_manager=None)
 
     Display.notify(f"Using linter: {linter_name}")
 
-    # Run linter
-    start = time.time()
+    # Get max heal cost from config
+    max_heal_cost = config.get("self_healing", {}).get("max_heal_cost")
+    default_provider_name = config.get("providers", {}).get("default", "claude")
 
+    # Run initial lint (with fix if not nofix)
+    start = time.time()
     if nofix:
-        # Just check, don't fix
         success, output = _run_lint_check(linter_name, language, cwd)
         action = "check"
     else:
-        # Run with auto-fix
         success, output = _run_lint_fix(linter_config, cwd)
         action = "fix"
 
@@ -103,7 +123,9 @@ def execute_lint(prompt, previous, step, memory, config, cwd, cost_manager=None)
     # Parse issues from output
     issues = _parse_lint_issues(output, linter_name)
 
-    # Log to memory
+    Display.notify(f"Linting: {len(issues)} issues found")
+
+    # Log initial run to memory
     memory.write(MemoryEntry(
         timestamp=time.time(),
         phase="lint",
@@ -117,13 +139,91 @@ def execute_lint(prompt, previous, step, memory, config, cwd, cost_manager=None)
             "success": success,
             "issues_count": len(issues),
             "duration": duration,
+            "round": 0,
         },
     ))
 
-    if not nofix:
-        Display.notify(f"Linting complete: {len(issues)} issues found/fixed")
-    else:
-        Display.notify(f"Lint check complete: {len(issues)} issues found")
+    # If self-healing and there are issues, use shared self_heal_loop
+    if self_heal and issues:
+        llm_provider = get_provider(default_provider_name, config)
+
+        # State for check function
+        round_counter = [0]
+        last_issues = [issues]
+        last_output = [output]
+        last_success = [success]
+
+        def check_fn():
+            """Run linter check and return (passed, issues, content, tokens)."""
+            round_counter[0] += 1
+
+            check_start = time.time()
+            check_success, check_output = _run_lint_check(linter_name, language, cwd)
+            check_duration = time.time() - check_start
+
+            check_issues = _parse_lint_issues(check_output, linter_name)
+
+            # Log to memory
+            memory.write(MemoryEntry(
+                timestamp=time.time(),
+                phase="lint",
+                agent="linter",
+                type="lint_run",
+                content=check_output[:5000],
+                metadata={
+                    "linter": linter_name,
+                    "language": language,
+                    "action": "check",
+                    "success": check_success,
+                    "issues_count": len(check_issues),
+                    "duration": check_duration,
+                    "round": round_counter[0],
+                },
+            ))
+
+            Display.notify(f"Lint check round {round_counter[0] + 1}: {len(check_issues)} issues")
+
+            # Update state for final return
+            last_issues[0] = check_issues
+            last_output[0] = check_output
+            last_success[0] = check_success
+
+            passed = len(check_issues) == 0
+            return passed, check_issues, check_output, 0  # linter doesn't use tokens
+
+        def fix_prompt_builder(content: str) -> str:
+            """Build fix prompt from linter output."""
+            return FIX_LINT_ISSUES_PROMPT.format(linter_output=content)
+
+        heal_result = self_heal_loop(
+            check_fn=check_fn,
+            fix_prompt_builder=fix_prompt_builder,
+            provider=llm_provider,
+            cwd=cwd,
+            max_rounds=2,
+            max_cost=max_heal_cost,
+            cost_manager=cost_manager,
+            provider_name=default_provider_name,
+            display_name="lint",
+            initial_files_changed=previous.get("files_changed", []),
+        )
+
+        return {
+            "success": last_success[0],
+            "linter": linter_name,
+            "language": language,
+            "issues": heal_result.issues,
+            "issues_count": len(heal_result.issues),
+            "output": last_output[0],
+            "auto_fixed": not nofix,
+            "duration": duration,
+            "files_changed": heal_result.files_changed,
+            "tokens_used": heal_result.total_tokens,
+            "lint_passed": heal_result.passed,
+        }
+
+    # Non-self-healing: return initial results
+    lint_passed = len(issues) == 0
 
     return {
         "success": success,
@@ -136,6 +236,7 @@ def execute_lint(prompt, previous, step, memory, config, cwd, cost_manager=None)
         "duration": duration,
         "files_changed": previous.get("files_changed", []),
         "tokens_used": 0,
+        "lint_passed": lint_passed,
     }
 
 
@@ -210,7 +311,6 @@ def _run_command(command: list[str], cwd: str, timeout: int = 120) -> tuple[bool
 
 def _parse_lint_issues(output: str, linter: str) -> list[dict]:
     """Parse lint issues from output."""
-    import re
     issues = []
 
     if linter in ["ruff", "flake8", "pylint"]:

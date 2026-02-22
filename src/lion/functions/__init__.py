@@ -12,6 +12,11 @@ from .devil import execute_devil
 from .context_build import execute_context
 from .distill import execute_distill
 from .task import execute_task
+from .impl import execute_impl
+from .onboard import execute_onboard
+from .audit import execute_audit
+from .cost import execute_cost
+from .migrate import execute_migrate
 
 FUNCTIONS = {
     "pride": execute_pride,
@@ -27,4 +32,9 @@ FUNCTIONS = {
     "context": execute_context,
     "distill": execute_distill,
     "task": execute_task,
+    "impl": execute_impl,
+    "onboard": execute_onboard,
+    "audit": execute_audit,
+    "cost": execute_cost,
+    "migrate": execute_migrate,
 }

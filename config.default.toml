@@ -1,7 +1,7 @@
 # Lion Configuration - Phase 1 (MVP) + Layer 2 (Context Ecosystem)
 
 [general]
-default_profile = "premium"
+default_profile = "balanced" # Changed from "premium" to "balanced"
 max_pride_size = 5
 max_retries = 3
 max_deliberation_rounds = 1
@@ -39,3 +39,115 @@ archaeology_max_age_days = 90         # Ignore runs older than this
 # Auto-distill: automatically compress when budget exceeded
 auto_distill = true
 distill_provider = "gemini"           # Use cheap provider for compression
+
+# Self-healing configuration (for ^ operator)
+[self_healing]
+max_rounds = 2                        # Max fix attempts per validation step
+# Approximate cost budget for self-healing. Uses provider-specific rates:
+# - Claude Opus: ~$75/1M output tokens, ~$15/1M input tokens
+# - Claude Sonnet: ~$15/1M output, ~$3/1M input
+# - Gemini Flash: ~$0.30/1M output, ~$0.075/1M input
+# Actual spend may vary based on model used and token counts.
+max_heal_cost = 0.50                  # Max approx cost in $ per self-healing loop (null = unlimited)
+
+
+# Phase 5: Per-Phase Model Selection via Profiles
+[profiles.cheap]
+propose = "gemini.flash"
+critique = "gemini.flash"
+converge = "claude.haiku"
+
+[profiles.balanced]
+propose = "claude.haiku"
+critique = "claude.haiku"
+converge = "claude.sonnet"
+
+[profiles.premium]
+propose = "claude.sonnet"
+critique = "claude.sonnet"
+converge = "claude.sonnet"
+
+# Onboarding documentation generation configuration
+[onboard]
+# Output file path (relative to project root)
+output_path = "docs/ONBOARDING.md"
+
+# Whether to write the file automatically (vs just returning content)
+write_file = true
+
+# Enable validation of generated documentation
+validate = true
+
+# How to handle existing onboarding documentation:
+# - "use_as_context": Use existing docs as input context (default)
+# - "supplement": Generate new sections that complement existing docs
+# - "replace": Generate completely new documentation
+existing_doc_mode = "use_as_context"
+
+# Sections to include in the documentation (order matters)
+# Available: WHAT, WHY, HOW, WHERE, GOTCHAS, TESTING, DEPLOYMENT
+include_sections = ["WHAT", "WHY", "HOW", "WHERE", "GOTCHAS", "TESTING"]
+
+# Sections to exclude (useful for overriding defaults)
+# Example: exclude_sections = ["DEPLOYMENT"] for CLI tools
+exclude_sections = []
+
+# Custom section configurations (optional)
+# Uncomment and modify to customize section prompts
+# [onboard.sections.WHAT]
+# title = "What is this project?"
+# prompt = "Describe what this project does."
+# required = true
+#
+# [onboard.sections.CUSTOM_SECTION]
+# title = "My Custom Section"
+# prompt = "Generate content about X."
+# required = false
+
+# Security audit configuration
+[audit]
+# Maximum files to analyze with AI (performance constraint)
+# AI analysis is expensive - set higher for more thorough scans
+max_ai_files = 50
+
+# Batch size for AI analysis (files per API call)
+ai_batch_size = 5
+
+# Maximum characters per file for AI analysis (truncation limit)
+# Files larger than this are truncated with semantic chunking at function boundaries
+max_file_chars = 15000
+
+# Context lines around findings in snippets
+context_lines = 2
+
+# Maximum line length in snippets before truncation
+max_line_length = 120
+
+# High-risk paths to prioritize for AI analysis (glob patterns)
+# These paths are analyzed first when AI file budget is limited
+high_risk_paths = [
+    "**/auth/**",
+    "**/authentication/**",
+    "**/login/**",
+    "**/payment/**",
+    "**/billing/**",
+    "**/checkout/**",
+    "**/admin/**",
+    "**/api/**",
+    "**/security/**",
+    "**/crypto/**",
+    "**/secrets/**",
+    "**/*password*",
+    "**/*token*",
+    "**/*credential*",
+]
+
+# Low-risk auto-fix categories (self-heal with ^ operator)
+# ONLY these categories allow automated fixes - complex issues require manual review
+self_heal_categories = ["secrets", "config"]
+
+# Specific self-heal rules that are safe to auto-fix:
+# - secrets: Replace hardcoded values with os.environ.get()
+# - debug_mode: Set DEBUG = False
+# - ssl_verify: Set verify = True
+self_heal_rules = ["secrets_to_env", "debug_false", "ssl_verify_true"]

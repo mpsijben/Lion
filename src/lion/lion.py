@@ -93,6 +93,13 @@ Examples:
         help="Context mode: minimal (no extra context), standard (reasoning + alternatives), rich (+ beliefs + assumptions), auto (select based on pipeline)"
     )
 
+    parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="Specify a profile from config.toml to use for model selection (e.g., 'cheap', 'balanced', 'premium')"
+    )
+
     return parser.parse_args()
 
 
@@ -128,6 +135,9 @@ def main():
 
     # Pass context mode to config for use in pipeline
     config["context_mode"] = args.context
+    
+    # Pass profile to config for use in pipeline
+    config["profile"] = args.profile
 
     # Parse input into prompt + pipeline
     prompt, pipeline_steps = parse_lion_input(raw_input, config)

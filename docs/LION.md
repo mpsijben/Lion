@@ -102,13 +102,13 @@ The devil's advocate concept exists in AI (AWS Bedrock case studies, academic re
 
 - **`onboard()`** - Generates documentation as if a new team member starts tomorrow. Not code comments, but "here's WHY we built it this way, what we considered and rejected, and what you need to know."
 
-- **`cost()`** - Estimates infrastructure/cloud costs for what was just built.
+- **`cost()`** - Infrastructure cost assessment. Does NOT generate cost estimates (LLM numbers are unreliable). Instead generates a checklist of detected components with pricing calculator links and questions to answer.
 
 - **`audit()`** - Security audit against OWASP top 10, dependency analysis, and attack surface review.
 
 - **`explain()`** - Documents the architectural decisions and rationale, not the code itself.
 
-- **`migrate()`** - Generates a zero-downtime migration plan from current state to the new code.
+- **`migrate()`** - Migration planning assistant. Does NOT generate migration plans (static analysis can't verify runtime behavior). Instead generates an assessment questionnaire with "VERIFY THIS ASSUMPTION" callouts.
 
 #### 4. Orchestration via Claude Code Hook
 Lion intercepts prompts at the `UserPromptSubmit` hook level - before Claude ever sees them. The orchestration logic (parsing, scheduling, agent coordination, shared memory management) happens in Python at zero token cost. The LLM calls themselves (propose, critique, converge, implement) do consume tokens - a `pride(3) -> review()` pipeline uses roughly ~13 LLM calls. Cost profiles (cheap/balanced/premium) and mixed free providers (Gemini, Ollama) help manage this overhead.
@@ -729,33 +729,45 @@ For each finding:
 """
 ```
 
-#### `cost()` - Infrastructure Cost Estimation
+#### `cost()` - Infrastructure Cost Assessment
+
+**IMPORTANT:** This function does NOT generate cost estimates. LLM-generated
+cost numbers are unreliable because cloud pricing is complex, region-dependent,
+and changes frequently. Users may make budget decisions based on hallucinated
+estimates.
+
+Instead, `cost()` generates:
+1. A **cost checklist** of detected infrastructure components
+2. **Pricing factors** you should look up for each component
+3. **Direct links** to cloud pricing calculators
+4. **Questions** about usage patterns that affect cost
+
+```python
+# Output structure (returned as structured JSON + markdown display)
+{
+    "components": [
+        {
+            "name": "aws-lambda",
+            "type": "compute",
+            "source_file": "serverless.yml",
+            "confidence": "high",
+            "pricing_factors": [
+                "Number of requests per month",
+                "Average execution duration (ms)",
+                "Memory allocated (MB)"
+            ],
+            "pricing_calculator": "https://calculator.aws/#/createCalculator/Lambda",
+            "questions": ["What's your expected requests per month?"],
+            "assumptions": ["Public pricing, no reserved instances"]
+        }
+    ],
+    "questions": ["What is your expected traffic?"],
+    "assumptions": ["Single region deployment"],
+    "next_steps": ["Use pricing calculators with YOUR usage data"]
+}
 ```
-COST_PROMPT = """
-Estimate the infrastructure/cloud costs for the following code
-in production.
 
-CODE:
-{code}
-
-Estimate for these scenarios:
-1. Low traffic: 100 requests/day
-2. Medium traffic: 10,000 requests/day
-3. High traffic: 1,000,000 requests/day
-
-Consider:
-- Compute (serverless/containers)
-- Database storage and queries
-- External API calls (with their pricing)
-- Bandwidth
-- Caching infrastructure
-- Monitoring/logging
-
-Provide monthly cost estimates in USD/EUR for each scenario.
-Flag any cost risks (e.g., "this Stripe webhook pattern will
-cost $X per Y events").
-"""
-```
+The user plugs in real numbers using the pricing tools and their actual usage data.
 
 #### `explain()` - Decision Documentation
 ```
@@ -779,32 +791,54 @@ DELIBERATION HISTORY (if available):
 """
 ```
 
-#### `migrate()` - Migration Plan
+#### `migrate()` - Migration Planning Assistant
+
+**IMPORTANT:** This function does NOT generate migration plans. Static file
+analysis cannot verify runtime dependencies, understand your specific failure
+modes, or guarantee rollback procedures work with your state management.
+
+A migration plan that says "use blue-green deployment" when your database
+doesn't support multi-writer is actively harmful. Users following AI-generated
+migration plans without verification is how outages happen.
+
+Instead, `migrate()` generates:
+1. A **migration assessment questionnaire** - questions you MUST answer
+2. **Detected changes** requiring migration (schema, config, dependencies)
+3. A **checklist of considerations** with "VERIFY THIS ASSUMPTION" callouts
+4. **Links to documentation** for your detected tech stack
+
+```python
+# Output structure (returned as structured JSON + markdown display)
+{
+    "detected_changes": [
+        {
+            "change_type": "schema",
+            "description": "Column addition detected",
+            "file": "migrations/0042_add_user_email.py",
+            "risk": "low",
+            "confidence": "detected",
+            "questions": ["Is this column nullable?"],
+            "assumptions": ["VERIFY: Migration is backward-compatible"],
+            "considerations": ["Can run without downtime if nullable"]
+        }
+    ],
+    "questions": [
+        {
+            "question": "Do you have shared state between old and new versions?",
+            "category": "state",
+            "why_it_matters": "Shared state can cause data corruption during rollout",
+            "options": ["No shared state", "Shared database", "Shared cache"]
+        }
+    ],
+    "tech_stack_detected": ["django", "postgresql", "kubernetes"],
+    "documentation_links": ["Django Migrations: https://..."],
+    "assumptions": ["VERIFY: You have a staging environment"],
+    "confidence_summary": "MEDIUM - verify all assumptions"
+}
 ```
-MIGRATE_PROMPT = """
-Create a zero-downtime migration plan from the current state
-to the new code.
 
-CURRENT STATE:
-{current_code}
-
-NEW STATE:
-{new_code}
-
-DATABASE CHANGES:
-{schema_diff}
-
-Create a step-by-step migration plan that:
-1. Has zero downtime
-2. Is reversible at each step
-3. Handles data migration safely
-4. Considers backward compatibility
-5. Includes rollback procedures
-6. Specifies the order of operations
-
-Format as a numbered checklist with estimated duration per step.
-"""
-```
+The user answers the questions, verifies assumptions, and creates their actual
+migration plan based on this assessment.
 
 ---
 
@@ -2600,8 +2634,8 @@ UNIQUE FUNCTIONS:
   onboard()             Generate onboarding documentation
   audit()               Security audit (OWASP top 10)
   explain()             Document architectural decisions
-  cost()                Estimate infrastructure costs
-  migrate()             Generate zero-downtime migration plan
+  cost()                Infrastructure cost checklist (not estimates!)
+  migrate()             Migration assessment questionnaire
 
 PATTERNS:
   lion pattern ship = -> pride(3) -> review() -> test() -> pr()

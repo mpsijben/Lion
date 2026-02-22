@@ -35,6 +35,8 @@ class PipelineStep:
     kwargs: dict = field(default_factory=dict)
     feedback: bool = False          # True if preceded by <-> or <N->
     feedback_agents: int | None = None  # Override agent count for re-run (None = use original)
+    concurrent: bool = False        # True if preceded by => (run in parallel)
+    self_heal: bool = False         # True if ^ operator is present (auto-fix issues)
 
 
 def parse_lion_input(raw: str, config: dict = None) -> tuple[str, list[PipelineStep]]:
@@ -48,9 +50,9 @@ def parse_lion_input(raw: str, config: dict = None) -> tuple[str, list[PipelineS
     if not pipeline_str:
         return prompt, []
 
-    # Split pipeline on -> and <-> / <N-> while preserving the delimiter.
-    # Matches: ->, <->, <1->, <3->, etc.
-    tokens = re.split(r"\s*(<\d*->|->)\s*", pipeline_str)
+    # Split pipeline on ->, => and <-> / <N-> while preserving the delimiter.
+    # Matches: ->, =>, <->, <1->, etc.
+    tokens = re.split(r"\s*(<\d*->|->|=>)\s*", pipeline_str)
 
     # tokens alternates: [step, delimiter, step, delimiter, step, ...]
     # Even indices are step strings, odd indices are delimiters.
@@ -64,14 +66,17 @@ def parse_lion_input(raw: str, config: dict = None) -> tuple[str, list[PipelineS
         if not step:
             continue
 
-        # Check if the delimiter before this step was a feedback operator
+        # Check if the delimiter before this step was a feedback or concurrent operator
         if idx > 0:
             delimiter = tokens[idx - 1]
-            feedback_match = re.match(r"<(\d*)->", delimiter)
-            if feedback_match:
-                step.feedback = True
-                agent_str = feedback_match.group(1)
-                step.feedback_agents = int(agent_str) if agent_str else None
+            if delimiter == "=>":
+                step.concurrent = True
+            else:
+                feedback_match = re.match(r"<(\d*)->", delimiter)
+                if feedback_match:
+                    step.feedback = True
+                    agent_str = feedback_match.group(1)
+                    step.feedback_agents = int(agent_str) if agent_str else None
 
         steps.append(step)
 
@@ -143,9 +148,14 @@ def _parse_step(step_str: str, config: dict) -> PipelineStep:
     # Parse arguments
     args = []
     kwargs = {}
+    self_heal = False
 
     for arg in _split_args(args_str):
         arg = arg.strip()
+        # Check for self-heal operator
+        if arg == "^":
+            self_heal = True
+            continue
         # IMPORTANT: Check for :: (lens syntax) BEFORE checking for single : (kwargs)
         # This ensures "claude::arch" is treated as a lens-provider pair, not a kwarg
         if "::" in arg:
@@ -158,7 +168,7 @@ def _parse_step(step_str: str, config: dict) -> PipelineStep:
         else:
             args.append(_parse_value(arg))
 
-    return PipelineStep(function=func_name, args=args, kwargs=kwargs)
+    return PipelineStep(function=func_name, args=args, kwargs=kwargs, self_heal=self_heal)
 
 
 def _split_args(args_str: str) -> list[str]:

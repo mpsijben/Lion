@@ -6,8 +6,33 @@ and project structure analysis.
 
 import os
 import json
-from typing import Optional
 
+
+# ============================================================================
+# SHARED CONSTANTS
+# ============================================================================
+
+# Maximum code size to pass to LLM (prevents context overflow)
+MAX_CODE_SIZE = 50000
+
+# Maximum self-healing rounds for validation functions
+MAX_SELF_HEAL_ROUNDS = 2
+
+# Maximum infrastructure files to analyze
+MAX_INFRA_FILES = 10
+
+# Maximum file characters for AI analysis context
+MAX_FILE_CHARS = 10000
+
+# Maximum files to scan in codebase analysis
+MAX_FILES_SCAN = 200
+
+# Maximum content size for AI analysis (characters)
+MAX_AI_CONTENT_SIZE = 15000
+
+# ============================================================================
+# TEST FRAMEWORK PATTERNS
+# ============================================================================
 
 # Test framework patterns (shared between test.py and create_tests.py)
 TEST_FRAMEWORK_PATTERNS = {
@@ -138,7 +163,7 @@ TYPE_CHECKER_PATTERNS = {
 }
 
 
-def detect_project_language(cwd: str) -> Optional[str]:
+def detect_project_language(cwd: str) -> str | None:
     """Detect the primary language of the project.
 
     Returns:
@@ -191,7 +216,7 @@ def detect_project_language(cwd: str) -> Optional[str]:
     return None
 
 
-def detect_test_framework(cwd: str) -> tuple[Optional[str], list[str]]:
+def detect_test_framework(cwd: str) -> tuple[str | None, list[str]]:
     """Detect the test framework used in the project.
 
     Returns:
@@ -242,7 +267,7 @@ def detect_test_framework(cwd: str) -> tuple[Optional[str], list[str]]:
     return None, []
 
 
-def detect_linter(cwd: str, language: Optional[str] = None) -> tuple[Optional[str], Optional[dict]]:
+def detect_linter(cwd: str, language: str | None = None) -> tuple[str | None, dict | None]:
     """Detect available linter for the project.
 
     Args:
@@ -280,7 +305,7 @@ def detect_linter(cwd: str, language: Optional[str] = None) -> tuple[Optional[st
     return None, None
 
 
-def detect_type_checker(cwd: str, language: Optional[str] = None) -> tuple[Optional[str], Optional[dict]]:
+def detect_type_checker(cwd: str, language: str | None = None) -> tuple[str | None, dict | None]:
     """Detect available type checker for the project.
 
     Args:
@@ -323,7 +348,7 @@ def detect_type_checker(cwd: str, language: Optional[str] = None) -> tuple[Optio
     return None, None
 
 
-def get_source_files(cwd: str, language: Optional[str] = None) -> list[str]:
+def get_source_files(cwd: str, language: str | None = None) -> list[str]:
     """Get list of source files in the project.
 
     Args:
@@ -364,7 +389,7 @@ def get_source_files(cwd: str, language: Optional[str] = None) -> list[str]:
     return files
 
 
-def get_test_files(cwd: str, framework: Optional[str] = None) -> list[str]:
+def get_test_files(cwd: str, framework: str | None = None) -> list[str]:
     """Get list of test files in the project.
 
     Args:
@@ -409,6 +434,57 @@ def get_test_files(cwd: str, framework: Optional[str] = None) -> list[str]:
     return files
 
 
+def get_current_code_from_disk(cwd: str, files_changed: list[str], max_size: int = 50000) -> str:
+    """Get current code state from disk for accurate re-review after fixes.
+
+    Uses git diff HEAD to get current working state of changed files.
+    Falls back to empty string if not in a git repo.
+
+    Args:
+        cwd: Working directory
+        files_changed: List of files to get diffs for
+        max_size: Maximum characters to return
+
+    Returns:
+        Git diff output for the specified files
+    """
+    import subprocess
+
+    if not files_changed:
+        # If no specific files, get overall git diff
+        try:
+            result = subprocess.run(
+                ["git", "diff", "HEAD"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout[:max_size]
+        except Exception:
+            pass
+        return ""
+
+    # Get diff of specific changed files
+    code_parts = []
+    for filepath in files_changed[:10]:  # Limit to 10 files
+        try:
+            result = subprocess.run(
+                ["git", "diff", "HEAD", "--", filepath],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                code_parts.append(f"=== {filepath} (diff) ===\n{result.stdout[:5000]}")
+        except Exception:
+            pass
+
+    return "\n\n".join(code_parts) if code_parts else ""
+
+
 def read_file_content(filepath: str, max_size: int = 50000) -> str:
     """Read file content with size limit.
 
@@ -427,3 +503,42 @@ def read_file_content(filepath: str, max_size: int = 50000) -> str:
             return content
     except Exception as e:
         return f"Error reading file: {e}"
+
+
+def extract_json_from_llm_response(content: str) -> dict:
+    """Extract JSON from LLM response that may be wrapped in markdown.
+
+    Handles various markdown formatting patterns commonly returned by LLMs:
+    - ```json ... ```
+    - ``` ... ```
+    - Plain JSON
+
+    Args:
+        content: The raw LLM response content
+
+    Returns:
+        Parsed JSON as a dict, or empty dict on failure.
+    """
+    if not content:
+        return {}
+
+    try:
+        # Try to extract from markdown code blocks
+        if "```json" in content:
+            parts = content.split("```json")
+            if len(parts) > 1:
+                inner_parts = parts[1].split("```")
+                if len(inner_parts) > 0:
+                    content = inner_parts[0]
+        elif "```" in content:
+            parts = content.split("```")
+            if len(parts) > 1:
+                content = parts[1]
+                # Check if there's a closing ``` and extract only the middle part
+                if "```" in content:
+                    content = content.split("```")[0]
+
+        return json.loads(content.strip())
+
+    except (json.JSONDecodeError, IndexError, TypeError):
+        return {}

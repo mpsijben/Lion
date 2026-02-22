@@ -9,6 +9,8 @@ import time
 from ..memory import SharedMemory, MemoryEntry
 from ..providers import get_provider
 from ..display import Display
+from .self_heal import self_heal_loop, extract_critical_issues
+from .utils import MAX_CODE_SIZE, get_current_code_from_disk
 
 
 FUTURE_PROMPT = """You are a developer working on this project {time_period} from now.
@@ -56,6 +58,16 @@ Format your response as:
 
 ## Recommendations
 [Prioritized list of changes to make now to prevent future pain]
+"""
+
+FIX_FUTURE_ISSUES_PROMPT = """You are an expert software engineer, brought from the future.
+The user has provided a time-travel review with issues found in the codebase.
+
+Your task is to fix ALL critical future pain points mentioned in the review.
+Edit the files directly and be thorough.
+
+FUTURE REVIEW:
+{future_review_content}
 """
 
 
@@ -159,18 +171,28 @@ def execute_future(prompt, previous, step, memory, config, cwd, cost_manager=Non
     # Get provider (default to claude, or use arg if specified after time period)
     provider_name = "claude"
     time_arg = "6m"  # default
+    # Use step.self_heal as the single source of truth for ^ operator (set by parser)
+    self_heal = step.self_heal if hasattr(step, 'self_heal') else False
 
     if step.args:
-        first_arg = str(step.args[0])
-        # Check if first arg is a time period (e.g., "6m", "1y")
-        if re.match(r'^\d+[mywdh]$', first_arg):
-            time_arg = first_arg
-            # If there's a second arg, it's the provider
-            if len(step.args) > 1:
-                provider_name = str(step.args[1])
-        else:
-            # First arg might be the provider
-            provider_name = first_arg
+        # Args can be: future(6m), future(claude), future(6m, claude)
+        # Skip ^ since it's handled by parser setting step.self_heal
+        parsed_args = []
+        for arg in step.args:
+            arg_str = str(arg).strip().lower()
+            if arg_str != "^":
+                parsed_args.append(arg_str)
+
+        if parsed_args:
+            first_arg = parsed_args[0]
+            if re.match(r'^\d+[mywdh]$', first_arg):
+                time_arg = first_arg
+                if len(parsed_args) > 1:
+                    provider_name = parsed_args[1]
+            elif re.match(r'^[a-zA-Z0-9\._-]+$', first_arg):
+                provider_name = first_arg
+                if len(parsed_args) > 1 and re.match(r'^\d+[mywdh]$', parsed_args[1]):
+                    time_arg = parsed_args[1]
 
     provider = get_provider(provider_name, config)
 
@@ -196,8 +218,7 @@ def execute_future(prompt, previous, step, memory, config, cwd, cost_manager=Non
             decisions_parts.append(f"- {d[:200]}")
     decisions = "\n".join(decisions_parts) if decisions_parts else "No architectural decisions recorded."
 
-    # Truncate code if too large (50KB limit to avoid context overflow)
-    MAX_CODE_SIZE = 50000
+    # Truncate code if too large to avoid context overflow
     if len(code) > MAX_CODE_SIZE:
         code = code[:MAX_CODE_SIZE] + "\n\n... [CODE TRUNCATED - showing first 50KB] ..."
 
@@ -207,53 +228,123 @@ def execute_future(prompt, previous, step, memory, config, cwd, cost_manager=Non
         decisions=decisions,
     )
 
-    Display.phase("future", f"Reviewing from {time_period} in the future...")
+    # Get max heal cost from config
+    max_heal_cost = config.get("self_healing", {}).get("max_heal_cost")
 
-    start = time.time()
-    result = provider.ask(future_prompt, "", cwd)
-    duration = time.time() - start
+    # State for the check function closure
+    round_counter = [0]
+    files_changed_state = [previous.get("files_changed", [])]
 
-    # Track cost if manager provided
-    if cost_manager and result.tokens_used:
-        cost_manager.add_cost(provider_name, result.tokens_used)
+    def check_fn():
+        """Run future review and return (passed, issues, content, tokens).
 
-    # Parse concerns from response
-    issues = _extract_future_concerns(result.content)
+        On subsequent rounds, rebuilds the prompt from current disk state
+        to ensure we're reviewing the actual fixed code, not stale data.
+        """
+        # On rounds > 0, get current code from disk instead of cached previous
+        if round_counter[0] > 0:
+            current_code = get_current_code_from_disk(cwd, files_changed_state[0])
+            if current_code:
+                current_prompt = FUTURE_PROMPT.format(
+                    time_period=time_period,
+                    code=current_code,
+                    decisions=decisions,
+                )
+            else:
+                current_prompt = future_prompt
+        else:
+            current_prompt = future_prompt
 
-    # Write to shared memory
-    memory.write(MemoryEntry(
-        timestamp=time.time(),
-        phase="future",
-        agent="future_reviewer",
-        type="future_review",
-        content=result.content,
-        metadata={
-            "model": result.model,
+        Display.phase("future", f"Reviewing from {time_period} in the future (round {round_counter[0] + 1})...")
+
+        start = time.time()
+        result = provider.ask(current_prompt, "", cwd)
+        duration = time.time() - start
+
+        issues = _extract_future_concerns(result.content)
+        critical_issues = extract_critical_issues(issues)
+
+        # Write to shared memory
+        memory.write(MemoryEntry(
+            timestamp=time.time(),
+            phase="future",
+            agent="future_reviewer",
+            type="future_review",
+            content=result.content,
+            metadata={
+                "model": result.model,
+                "time_period": time_period,
+                "issues_count": len(issues),
+                "duration": duration,
+                "round": round_counter[0],
+            },
+        ))
+
+        Display.notify(f"Future review round {round_counter[0] + 1}: Found {len(issues)} concerns ({len(critical_issues)} critical)")
+        round_counter[0] += 1
+
+        passed = len(critical_issues) == 0
+        return passed, issues, result.content, result.tokens_used
+
+    def fix_prompt_builder(content: str) -> str:
+        """Build fix prompt from future review content."""
+        return FIX_FUTURE_ISSUES_PROMPT.format(future_review_content=content)
+
+    if self_heal:
+        heal_result = self_heal_loop(
+            check_fn=check_fn,
+            fix_prompt_builder=fix_prompt_builder,
+            provider=provider,
+            cwd=cwd,
+            max_rounds=2,
+            max_cost=max_heal_cost,
+            cost_manager=cost_manager,
+            provider_name=provider_name,
+            display_name="future",
+            initial_files_changed=previous.get("files_changed", []),
+        )
+
+        issues = heal_result.issues
+        critical_issues = extract_critical_issues(issues)
+        warning_issues = [i for i in issues if i.get("severity") == "warning"]
+        has_feedback = len(critical_issues) > 0 or len(warning_issues) > 0
+
+        return {
+            "success": True,
+            "content": heal_result.content,
+            "issues": issues,
+            "critical_count": len(critical_issues),
+            "warning_count": len(warning_issues),
+            "suggestion_count": len([i for i in issues if i.get("severity") == "suggestion"]),
+            "has_feedback": has_feedback,
+            "errors_count": 0,
+            "tokens_used": heal_result.total_tokens,
+            "files_changed": heal_result.files_changed,
             "time_period": time_period,
-            "issues_count": len(issues),
-            "duration": duration,
-        },
-    ))
+            "future_review_passed": heal_result.passed,
+        }
+    else:
+        # Non-self-healing: just run once
+        passed, issues, content, tokens_used = check_fn()
+        critical_issues = extract_critical_issues(issues)
+        warning_issues = [i for i in issues if i.get("severity") == "warning"]
+        has_feedback = len(critical_issues) > 0 or len(warning_issues) > 0
 
-    # Count issues by severity
-    critical_issues = [i for i in issues if i.get("severity") == "critical"]
-    warning_issues = [i for i in issues if i.get("severity") == "warning"]
-    suggestion_issues = [i for i in issues if i.get("severity") == "suggestion"]
+        # Track cost for non-self-heal path
+        if cost_manager and tokens_used:
+            cost_manager.add_cost(provider_name, tokens_used)
 
-    # Determine if there's actionable feedback (for <-> operator)
-    has_feedback = len(critical_issues) > 0 or len(warning_issues) > 0
-
-    return {
-        "success": result.success,
-        "content": result.content,
-        "issues": issues,
-        "critical_count": len(critical_issues),
-        "warning_count": len(warning_issues),
-        "suggestion_count": len(suggestion_issues),
-        "has_feedback": has_feedback,
-        "errors_count": 0,  # Future review doesn't produce errors, just concerns
-        "tokens_used": result.tokens_used,
-        "files_changed": previous.get("files_changed", []),
-        "time_period": time_period,
-        "future_review_passed": len(critical_issues) == 0,
-    }
+        return {
+            "success": True,
+            "content": content,
+            "issues": issues,
+            "critical_count": len(critical_issues),
+            "warning_count": len(warning_issues),
+            "suggestion_count": len([i for i in issues if i.get("severity") == "suggestion"]),
+            "has_feedback": has_feedback,
+            "errors_count": 0,
+            "tokens_used": tokens_used,
+            "files_changed": previous.get("files_changed", []),
+            "time_period": time_period,
+            "future_review_passed": len(critical_issues) == 0,
+        }

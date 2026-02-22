@@ -18,7 +18,7 @@ from .context import (
 )
 
 # Functions that produce code (call implement(), write files to disk)
-PRODUCER_FUNCTIONS = {"pride", "test"}
+PRODUCER_FUNCTIONS = {"pride", "impl", "test"}
 
 # Maximum feedback rounds before moving on (producer re-run + re-verify = 1 round)
 MAX_FEEDBACK_ROUNDS = 2
@@ -58,8 +58,14 @@ class PipelineResult:
 def _needs_refinement(step_result):
     """Determine if a step's output warrants a feedback re-run.
 
-    Returns True if the step produced actionable feedback (issues, errors, critiques).
+    Returns True if the step produced actionable feedback (issues, errors, critiques)
+    OR if a self-healing step failed its internal checks.
     """
+    # Check for explicit needs_refinement field (canonical approach)
+    if "needs_refinement" in step_result:
+        return step_result["needs_refinement"]
+
+    # Check for issue counts
     if step_result.get("critical_count", 0) > 0:
         return True
     if step_result.get("warning_count", 0) > 0:
@@ -70,7 +76,78 @@ def _needs_refinement(step_result):
         return True
     if step_result.get("errors_count", 0) > 0:
         return True
+
+    # Check for any *_passed field that is False
+    # This handles review_passed, devil_passed, future_review_passed, lint_passed, typecheck_passed
+    for key, value in step_result.items():
+        if key.endswith("_passed") and value is False:
+            return True
+
     return False
+
+
+def _merge_parallel_results(results: list[dict]) -> dict:
+    """Properly merge results from parallel pipeline steps.
+
+    Combines:
+    - files_changed: union of all files
+    - issues: concatenate all issue lists
+    - *_passed flags: AND together (all must pass)
+    - critical_count, warning_count, etc.: sum
+    - content: first non-empty
+    - code: first non-empty
+    """
+    if not results:
+        return {}
+
+    merged = {}
+
+    # Union files_changed
+    all_files = []
+    for r in results:
+        all_files.extend(r.get("files_changed", []))
+    if all_files:
+        merged["files_changed"] = list(set(all_files))
+
+    # Concatenate issues
+    all_issues = []
+    for r in results:
+        all_issues.extend(r.get("issues", []))
+    if all_issues:
+        merged["issues"] = all_issues
+
+    # AND together *_passed flags
+    passed_keys = ["review_passed", "devil_passed", "future_review_passed",
+                   "lint_passed", "typecheck_passed"]
+    for key in passed_keys:
+        values = [r.get(key) for r in results if key in r]
+        if values:
+            merged[key] = all(values)
+
+    # Sum count fields
+    count_keys = ["critical_count", "warning_count", "suggestion_count",
+                  "errors_count", "issues_count", "tokens_used"]
+    for key in count_keys:
+        total = sum(r.get(key, 0) for r in results)
+        if total > 0:
+            merged[key] = total
+
+    # First non-empty content/code
+    for key in ["content", "code"]:
+        for r in results:
+            if r.get(key):
+                merged[key] = r[key]
+                break
+
+    # Success: all must succeed
+    if any("success" in r for r in results):
+        merged["success"] = all(r.get("success", True) for r in results)
+
+    # has_feedback: OR together
+    if any("has_feedback" in r for r in results):
+        merged["has_feedback"] = any(r.get("has_feedback", False) for r in results)
+
+    return merged
 
 
 def _build_dependency_levels(subtasks):
@@ -191,137 +268,228 @@ class PipelineExecutor:
                 errors=[f"Unknown function: {name}" for name in unknown],
             )
 
-        # Execute pipeline steps sequentially
+        # Group steps into sequential and parallel blocks
+        # A block is a list of steps that should be executed concurrently
+        # Blocks are executed sequentially.
+        execution_blocks = []
+        current_block = []
+        for i, step in enumerate(self.steps):
+            current_block.append((i, step))
+            if not step.concurrent or i == len(self.steps) - 1:
+                execution_blocks.append(current_block)
+                current_block = []
+
+        # Execute pipeline steps block by block
         previous_output = {"prompt": self.prompt, "code": "", "decisions": []}
 
-        for i, step in enumerate(self.steps):
-            Display.step_start(i + 1, len(self.steps), step)
+        for block_num, block in enumerate(execution_blocks):
+            if len(block) == 1:
+                # Single step block (sequential execution)
+                i, step = block[0]
+                Display.step_start(i + 1, len(self.steps), step)
+                try:
+                    step_result, new_files_changed, new_tokens_used = self._execute_single_step(
+                        prompt=self.prompt,
+                        previous=previous_output,
+                        step_index=i,
+                        step=step,
+                    )
+                    self.outputs.append(step_result)
+                    self.total_tokens += new_tokens_used
+                    self.files_changed.extend(new_files_changed)
 
-            func = FUNCTIONS.get(step.function)
-            if not func:
-                self.errors.append(f"Unknown function: {step.function}")
-                Display.step_error(step.function, "Unknown function")
-                continue
+                    # Collect summaries from pride steps
+                    if step_result.get("agent_summaries"):
+                        self.agent_summaries = step_result["agent_summaries"]
+                    if step_result.get("final_decision"):
+                        self.final_decision = step_result["final_decision"]
+                    
+                    previous_output = {**previous_output, **step_result}
 
-            try:
-                step_result = func(
-                    prompt=self.prompt,
-                    previous=previous_output,
-                    step=step,
-                    memory=self.memory,
-                    config=self.config,
-                    cwd=self.cwd,
-                    cost_manager=self.cost_manager,
-                )
+                    if step_result.get("is_task_decomposition"):
+                        # Handle task decomposition: run remaining pipeline for each subtask
+                        subtasks = step_result.get("subtasks", [])
+                        remaining_steps = self.steps[i + 1:] # remaining steps from main pipeline
+                        if subtasks and remaining_steps:
+                            self.steps_completed += 1
+                            Display.step_complete(step.function, step_result)
 
-                self.outputs.append(step_result)
-                self.total_tokens += step_result.get("tokens_used", 0)
-                self.files_changed.extend(step_result.get("files_changed", []))
+                            self._run_subtasks(
+                                subtasks, remaining_steps, previous_output
+                            )
+                            # Break the main loop as subtasks have taken over
+                            break
+                    
+                    # Handle feedback loop for sequential steps
+                    if step.feedback and _needs_refinement(step_result):
+                        producer_step, producer_idx = self._find_last_producer(i)
+                        if producer_step:
+                            feedback_result = step_result
+                            for round_num in range(MAX_FEEDBACK_ROUNDS):
+                                Display.phase(
+                                    "refine",
+                                    f"Round {round_num + 1}/{MAX_FEEDBACK_ROUNDS}: "
+                                    f"Re-running {producer_step.function} with "
+                                    f"{step.function} feedback...",
+                                )
+                                refine_result = self._run_feedback_loop(
+                                    feedback_step=step,
+                                    feedback_result=feedback_result,
+                                    producer_step=producer_step,
+                                    previous=previous_output,
+                                )
+                                if not refine_result:
+                                    break
 
-                # Collect summaries from pride steps
-                if step_result.get("agent_summaries"):
-                    self.agent_summaries = step_result["agent_summaries"]
-                if step_result.get("final_decision"):
-                    self.final_decision = step_result["final_decision"]
+                                self.outputs.append(refine_result)
+                                self.total_tokens += refine_result.get("tokens_used", 0)
+                                self.files_changed.extend(
+                                    refine_result.get("files_changed", [])
+                                )
+                                if refine_result.get("agent_summaries"):
+                                    self.agent_summaries = refine_result["agent_summaries"]
+                                if refine_result.get("final_decision"):
+                                    self.final_decision = refine_result["final_decision"]
+                                previous_output = {**previous_output, **refine_result}
 
-                previous_output = {**previous_output, **step_result}
+                                # Re-verify: run the feedback step again
+                                Display.phase(
+                                    "refine",
+                                    f"Round {round_num + 1}/{MAX_FEEDBACK_ROUNDS}: "
+                                    f"Re-verifying with {step.function}...",
+                                )
+                                verify_result, _, _ = self._execute_single_step(
+                                    prompt=self.prompt,
+                                    previous=previous_output,
+                                    step_index=i,
+                                    step=step,
+                                )
+                                self.outputs.append(verify_result)
+                                self.total_tokens += verify_result.get("tokens_used", 0)
+                                previous_output = {**previous_output, **verify_result}
 
-                # Handle task decomposition: run remaining pipeline for each subtask
-                if step_result.get("is_task_decomposition"):
-                    subtasks = step_result.get("subtasks", [])
-                    remaining_steps = self.steps[i + 1:]
+                                # If no more issues, break out of the loop
+                                if not _needs_refinement(verify_result):
+                                    Display.notify(
+                                        f"{step.function} passed after "
+                                        f"{round_num + 1} round(s)"
+                                    )
+                                    break
 
-                    if subtasks and remaining_steps:
+                                feedback_result = verify_result
+                            else:
+                                # Exhausted all rounds without passing
+                                Display.notify(
+                                    f"Max feedback rounds ({MAX_FEEDBACK_ROUNDS}) "
+                                    f"reached, continuing pipeline"
+                                )
+
+                    # Only count as completed if step was successful
+                    if step_result.get("success", True):
                         self.steps_completed += 1
                         Display.step_complete(step.function, step_result)
-
-                        self._run_subtasks(
-                            subtasks, remaining_steps, previous_output
-                        )
-
-                        # Skip remaining steps in the main loop
-                        # (they've been run per-subtask)
+                        Display.step_summary(step.function, step_result)
+                    else:
+                        # Step failed internally - still add error and break
+                        error_msg = step_result.get("error", "Step failed")
+                        if f"{step.function}:" not in " ".join(self.errors):
+                            self.errors.append(f"{step.function}: {error_msg}")
                         break
-                    # If no remaining steps, just continue normally
 
-                # Handle feedback loop: <-> or <N-> operator
-                # Re-runs the producer, then re-verifies with the same feedback
-                # step, up to MAX_FEEDBACK_ROUNDS times.
-                if step.feedback and _needs_refinement(step_result):
-                    producer_step, producer_idx = self._find_last_producer(i)
-                    if producer_step:
-                        feedback_result = step_result
-                        for round_num in range(MAX_FEEDBACK_ROUNDS):
-                            Display.phase(
-                                "refine",
-                                f"Round {round_num + 1}/{MAX_FEEDBACK_ROUNDS}: "
-                                f"Re-running {producer_step.function} with "
-                                f"{step.function} feedback...",
-                            )
-                            refine_result = self._run_feedback_loop(
-                                feedback_step=step,
-                                feedback_result=feedback_result,
-                                producer_step=producer_step,
-                                previous=previous_output,
-                            )
-                            if not refine_result:
-                                break
+                except Exception as e:
+                    self.errors.append(f"{step.function}: {str(e)}")
+                    Display.step_error(step.function, str(e))
+                    break # Break out of block loop
+            else:
+                # Parallel block (multiple steps executed concurrently)
+                # Check for self-healing steps - these should not run in parallel
+                # to avoid race conditions when multiple steps try to fix overlapping files
+                self_heal_steps = [
+                    (i, step) for i, step in block
+                    if hasattr(step, 'self_heal') and step.self_heal
+                ]
 
-                            self.outputs.append(refine_result)
-                            self.total_tokens += refine_result.get("tokens_used", 0)
-                            self.files_changed.extend(
-                                refine_result.get("files_changed", [])
-                            )
-                            if refine_result.get("agent_summaries"):
-                                self.agent_summaries = refine_result["agent_summaries"]
-                            if refine_result.get("final_decision"):
-                                self.final_decision = refine_result["final_decision"]
-                            previous_output = {**previous_output, **refine_result}
-
-                            # Re-verify: run the feedback step again
-                            Display.phase(
-                                "refine",
-                                f"Round {round_num + 1}/{MAX_FEEDBACK_ROUNDS}: "
-                                f"Re-verifying with {step.function}...",
-                            )
-                            verify_result = func(
+                if len(self_heal_steps) > 1:
+                    # Multiple self-healing steps in parallel - fall back to sequential
+                    # to prevent race conditions on file writes
+                    Display.notify(
+                        f"Falling back to sequential execution for {len(self_heal_steps)} "
+                        f"self-healing steps to prevent file write conflicts"
+                    )
+                    for i, step in block:
+                        Display.step_start(i + 1, len(self.steps), step)
+                        try:
+                            step_result, new_files_changed, new_tokens_used = self._execute_single_step(
                                 prompt=self.prompt,
                                 previous=previous_output,
+                                step_index=i,
                                 step=step,
-                                memory=self.memory,
-                                config=self.config,
-                                cwd=self.cwd,
-                                cost_manager=self.cost_manager,
                             )
-                            self.outputs.append(verify_result)
-                            self.total_tokens += verify_result.get("tokens_used", 0)
-                            previous_output = {**previous_output, **verify_result}
+                            self.outputs.append(step_result)
+                            self.total_tokens += new_tokens_used
+                            self.files_changed.extend(new_files_changed)
 
-                            # If no more issues, break out of the loop
-                            if not _needs_refinement(verify_result):
-                                Display.notify(
-                                    f"{step.function} passed after "
-                                    f"{round_num + 1} round(s)"
-                                )
-                                break
+                            if step_result.get("agent_summaries"):
+                                self.agent_summaries = step_result["agent_summaries"]
+                            if step_result.get("final_decision"):
+                                self.final_decision = step_result["final_decision"]
 
-                            feedback_result = verify_result
+                            previous_output = {**previous_output, **step_result}
+                            self.steps_completed += 1
+                            Display.step_complete(step.function, step_result)
+                            Display.step_summary(step.function, step_result)
 
-                        else:
-                            # Exhausted all rounds without passing
-                            Display.notify(
-                                f"Max feedback rounds ({MAX_FEEDBACK_ROUNDS}) "
-                                f"reached, continuing pipeline"
-                            )
+                        except Exception as e:
+                            self.errors.append(f"{step.function}: {str(e)}")
+                            Display.step_error(step.function, str(e))
+                            break
+                    continue  # Skip the parallel execution block below
 
-                self.steps_completed += 1
-                Display.step_complete(step.function, step_result)
-                Display.step_summary(step.function, step_result)
+                Display.phase("concurrent", f"Executing {len(block)} steps concurrently...")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(block)) as executor:
+                    futures = {}
+                    for i, step in block:
+                        Display.step_start(i + 1, len(self.steps), step, concurrent=True)
+                        futures[executor.submit(
+                            self._execute_single_step,
+                            prompt=self.prompt,
+                            previous=previous_output,
+                            step_index=i,
+                            step=step,
+                        )] = (i, step)
+                    
+                    block_results = []
+                    for future in concurrent.futures.as_completed(futures):
+                        i, step = futures[future]
+                        try:
+                            step_result, new_files_changed, new_tokens_used = future.result()
+                            block_results.append((i, step_result, new_files_changed, new_tokens_used))
 
-            except Exception as e:
-                self.errors.append(f"{step.function}: {str(e)}")
-                Display.step_error(step.function, str(e))
-                break
+                            self.outputs.append(step_result)
+                            self.total_tokens += new_tokens_used
+                            self.files_changed.extend(new_files_changed)
+
+                            if step_result.get("agent_summaries"):
+                                self.agent_summaries.extend(step_result["agent_summaries"])
+                            if step_result.get("final_decision"):
+                                # If multiple parallel steps produce final_decision, only keep the last one
+                                self.final_decision = step_result["final_decision"]
+                            
+                            self.steps_completed += 1
+                            Display.step_complete(step.function, step_result, concurrent=True)
+                            Display.step_summary(step.function, step_result, concurrent=True)
+
+                        except Exception as e:
+                            self.errors.append(f"{step.function}: {str(e)}")
+                            Display.step_error(step.function, str(e), concurrent=True)
+
+                # Merge outputs from parallel block properly
+                if block_results:
+                    merged = _merge_parallel_results([r[1] for r in block_results])
+                    previous_output = {**previous_output, **merged}
+
+            if self.errors:
+                break # Break out of main block loop if any error occurred
 
         return PipelineResult(
             success=len(self.errors) == 0,
@@ -336,6 +504,33 @@ class PipelineExecutor:
             agent_summaries=self.agent_summaries,
             final_decision=self.final_decision,
         )
+
+    def _execute_single_step(self, prompt, previous, step_index, step):
+        """Execute a single pipeline step and return its result, files changed, and tokens used."""
+        func = FUNCTIONS.get(step.function)
+        if not func:
+            self.errors.append(f"Unknown function: {step.function}")
+            Display.step_error(step.function, "Unknown function")
+            return {"success": False, "error": "Unknown function"}, [], 0
+
+        try:
+            step_result = func(
+                prompt=prompt,
+                previous=previous,
+                step=step,
+                memory=self.memory,
+                config=self.config,
+                cwd=self.cwd,
+                cost_manager=self.cost_manager,
+            )
+            new_files_changed = step_result.get("files_changed", [])
+            new_tokens_used = step_result.get("tokens_used", 0)
+            return step_result, new_files_changed, new_tokens_used
+
+        except Exception as e:
+            self.errors.append(f"{step.function}: {str(e)}")
+            Display.step_error(step.function, str(e))
+            return {"success": False, "error": str(e)}, [], 0
 
     def _find_last_producer(self, current_idx):
         """Find the last producer step before current_idx.

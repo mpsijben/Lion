@@ -36,13 +36,13 @@ class TestReadTty:
 
     def test_read_from_tty(self):
         """Test reading from /dev/tty."""
-        mock_tty_out = MagicMock()
-        mock_tty_in = MagicMock()
-        mock_tty_in.readline.return_value = "user input\n"
+        mock_tty = MagicMock()
+        mock_tty.readline.return_value = "user input\n"
 
         def mock_open_fn(path, mode="r"):
+            assert mode == "r+"
             mock = MagicMock()
-            mock.__enter__ = MagicMock(return_value=mock_tty_out if mode == "w" else mock_tty_in)
+            mock.__enter__ = MagicMock(return_value=mock_tty)
             mock.__exit__ = MagicMock(return_value=False)
             return mock
 
@@ -50,6 +50,7 @@ class TestReadTty:
             result = _read_tty("Prompt: ")
 
         assert result == "user input"
+        mock_tty.write.assert_called_with("Prompt: ")
 
     def test_read_tty_raises_on_no_tty(self):
         """Test that RuntimeError is raised when no tty available."""
@@ -58,6 +59,24 @@ class TestReadTty:
                 _read_tty("Prompt: ")
 
         assert "Cannot read from /dev/tty" in str(excinfo.value)
+
+    def test_read_tty_raises_on_eof(self):
+        """Test that RuntimeError is raised when tty input is unavailable."""
+        mock_tty = MagicMock()
+        mock_tty.readline.return_value = ""
+
+        def mock_open_fn(path, mode="r"):
+            assert mode == "r+"
+            mock = MagicMock()
+            mock.__enter__ = MagicMock(return_value=mock_tty)
+            mock.__exit__ = MagicMock(return_value=False)
+            return mock
+
+        with patch("builtins.open", mock_open_fn):
+            with pytest.raises(RuntimeError) as excinfo:
+                _read_tty("Prompt: ")
+
+        assert "No interactive input available" in str(excinfo.value)
 
 
 class TestEscalationAskChoice:
@@ -185,6 +204,14 @@ class TestEscalationAgentStuck:
             # With retries_left=0, takeover is option 3
             with patch("lion.escalation._read_tty", return_value="3"):
                 result = Escalation.agent_stuck("test_agent", "Error", retries_left=0)
+
+        assert result == "takeover"
+
+    def test_agent_stuck_defaults_to_takeover_on_no_input(self):
+        """Test fallback behavior when interactive input is unavailable."""
+        with patch("lion.escalation._print_tty"):
+            with patch("lion.escalation._read_tty", side_effect=RuntimeError("No tty input")):
+                result = Escalation.agent_stuck("test_agent", "Error", retries_left=2)
 
         assert result == "takeover"
 

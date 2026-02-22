@@ -16,15 +16,18 @@ TASK: {prompt}
 
 WORKING DIRECTORY: {cwd}
 
+Your role is PLANNING ONLY. Do NOT edit files or request write access. Just describe your plan as text.
+
 Propose your approach. Be specific about:
 1. Architecture and design decisions
-2. Files to create or modify
+2. Which files would need to be created or modified
 3. Key implementation details
 4. Potential risks or edge cases
 
 Keep it concise but actionable.
 
-IMPORTANT: Start DIRECTLY with your approach. Do NOT begin with preamble like "I now have a clear understanding" or "Perfect, let me analyze". Jump straight into the content."""
+IMPORTANT: Start DIRECTLY with your approach. Do NOT begin with preamble like "I now have a clear understanding" or "Perfect, let me analyze". Jump straight into the content.
+Do NOT attempt to write, edit, or create any files. Only describe your proposed plan."""
 
 PROPOSE_PROMPT_STANDARD = """You are Agent {agent_num} of {total_agents} working on:
 
@@ -34,8 +37,11 @@ WORKING DIRECTORY: {cwd}
 
 {shared_context}
 
+Your role is PLANNING ONLY. Do NOT edit files or request write access. Just describe your plan as text.
+
 Propose your approach. Structure your response EXACTLY as follows.
 IMPORTANT: Start DIRECTLY with "## Approach". No preamble, no "I understand", no "Let me analyze". Begin immediately with the structured output.
+Do NOT attempt to write, edit, or create any files. Only describe your proposed plan.
 
 ## Approach
 [Your proposed approach -- be specific about architecture, files, implementation]
@@ -63,8 +69,11 @@ WORKING DIRECTORY: {cwd}
 
 {shared_context}
 
+Your role is PLANNING ONLY. Do NOT edit files or request write access. Just describe your plan as text.
+
 Propose your approach. Structure your response EXACTLY as follows.
 IMPORTANT: Start DIRECTLY with "## Approach". No preamble, no "I understand", no "Let me analyze". Begin immediately with the structured output.
+Do NOT attempt to write, edit, or create any files. Only describe your proposed plan.
 
 ## Approach
 [Your proposed approach -- be specific about architecture, files, implementation]

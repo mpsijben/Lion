@@ -11,6 +11,8 @@ from ..memory import SharedMemory, MemoryEntry
 from ..providers import get_provider, is_provider_name
 from ..display import Display
 from ..toon import encode as toon_encode
+from .self_heal import self_heal_loop, extract_critical_issues
+from .utils import MAX_CODE_SIZE, get_current_code_from_disk
 
 
 DEVIL_PROMPT = """You are the Devil's Advocate. Your job is NOT to find bugs
@@ -105,6 +107,16 @@ Format your response as:
 [Overall assessment: is this approach fundamentally sound or does it need rethinking?]
 """
 
+FIX_DEVIL_ISSUES_PROMPT = """You are an expert software engineer.
+The user has provided a devil's advocate review with challenges found in the codebase.
+
+Your task is to address ALL critical challenges mentioned in the review.
+Edit the files directly and be thorough.
+
+DEVIL'S ADVOCATE REVIEW:
+{devil_review_content}
+"""
+
 
 def execute_devil(prompt, previous, step, memory, config, cwd, cost_manager=None):
     """Execute devil's advocate challenge on previous step output.
@@ -127,12 +139,15 @@ def execute_devil(prompt, previous, step, memory, config, cwd, cost_manager=None
     # Get provider and mode from args
     provider_name = "claude"
     aggressive = False
+    # Use step.self_heal as the single source of truth for ^ operator (set by parser)
+    self_heal = step.self_heal if hasattr(step, 'self_heal') else False
 
     for arg in (step.args or []):
         arg_str = str(arg).lower()
         if arg_str == "aggressive":
             aggressive = True
-        elif is_provider_name(arg_str):
+        # Skip ^ since it's handled by parser setting step.self_heal
+        elif arg_str != "^" and is_provider_name(arg_str):
             provider_name = arg_str
 
     provider = get_provider(provider_name, config)
@@ -158,8 +173,7 @@ def execute_devil(prompt, previous, step, memory, config, cwd, cost_manager=None
             plan_parts.append(f"Deliberation:\n{deliberation}")
     consensus_plan = "\n".join(plan_parts) if plan_parts else "No plan or decisions recorded."
 
-    # Truncate code if too large (50KB limit)
-    MAX_CODE_SIZE = 50000
+    # Truncate code if too large to avoid context overflow
     if len(code) > MAX_CODE_SIZE:
         code = code[:MAX_CODE_SIZE] + "\n\n... [CODE TRUNCATED - showing first 50KB] ..."
 
@@ -170,62 +184,130 @@ def execute_devil(prompt, previous, step, memory, config, cwd, cost_manager=None
         code=code if code else "No code changes to challenge.",
     )
 
+    # Get max heal cost from config
+    max_heal_cost = config.get("self_healing", {}).get("max_heal_cost")
+
+    # State for the check function closure
+    round_counter = [0]
     mode_str = "aggressively " if aggressive else ""
-    Display.phase("devil", f"{mode_str}Challenging decisions and assumptions...")
+    files_changed_state = [previous.get("files_changed", [])]
 
-    start = time.time()
-    result = provider.ask(devil_prompt, "", cwd)
-    duration = time.time() - start
+    def check_fn():
+        """Run devil's advocate and return (passed, issues, content, tokens).
 
-    # Track cost if manager provided
-    if cost_manager and result.tokens_used:
-        cost_manager.add_cost(provider_name, result.tokens_used)
+        On subsequent rounds, rebuilds the prompt from current disk state
+        to ensure we're reviewing the actual fixed code, not stale data.
+        """
+        # On rounds > 0, get current code from disk instead of cached previous
+        if round_counter[0] > 0:
+            current_code = get_current_code_from_disk(cwd, files_changed_state[0])
+            if current_code:
+                current_prompt = template.format(
+                    consensus_plan=consensus_plan,
+                    code=current_code,
+                )
+            else:
+                current_prompt = devil_prompt
+        else:
+            current_prompt = devil_prompt
 
-    # Parse issues from response
-    issues = _extract_challenges(result.content)
+        Display.phase("devil", f"{mode_str}Challenging decisions and assumptions (round {round_counter[0] + 1})...")
 
-    # Write to shared memory with TOON-encoded issues for compact context
-    if issues:
-        issues_toon = toon_encode({"issues": issues})
-        compact_content = f"{issues_toon}\n\nFull analysis:\n{result.content[:3000]}"
+        start = time.time()
+        result = provider.ask(current_prompt, "", cwd)
+        duration = time.time() - start
+
+        issues = _extract_challenges(result.content)
+        critical_issues = extract_critical_issues(issues)
+
+        # Write to shared memory with TOON-encoded issues for compact context
+        if issues:
+            issues_toon = toon_encode({"issues": issues})
+            compact_content = f"{issues_toon}\n\nFull analysis:\n{result.content[:3000]}"
+        else:
+            compact_content = result.content[:3000]
+
+        memory.write(MemoryEntry(
+            timestamp=time.time(),
+            phase="devil",
+            agent="devil_advocate",
+            type="devil_review",
+            content=compact_content,
+            metadata={
+                "model": result.model,
+                "aggressive": aggressive,
+                "issues_count": len(issues),
+                "duration": duration,
+                "round": round_counter[0],
+            },
+        ))
+
+        Display.notify(f"Devil's Advocate round {round_counter[0] + 1}: Found {len(issues)} challenges ({len(critical_issues)} critical)")
+        round_counter[0] += 1
+
+        passed = len(critical_issues) == 0
+        return passed, issues, result.content, result.tokens_used
+
+    def fix_prompt_builder(content: str) -> str:
+        """Build fix prompt from devil's advocate content."""
+        return FIX_DEVIL_ISSUES_PROMPT.format(devil_review_content=content)
+
+    if self_heal:
+        heal_result = self_heal_loop(
+            check_fn=check_fn,
+            fix_prompt_builder=fix_prompt_builder,
+            provider=provider,
+            cwd=cwd,
+            max_rounds=2,
+            max_cost=max_heal_cost,
+            cost_manager=cost_manager,
+            provider_name=provider_name,
+            display_name="devil",
+            initial_files_changed=previous.get("files_changed", []),
+        )
+
+        issues = heal_result.issues
+        critical_issues = extract_critical_issues(issues)
+        warning_issues = [i for i in issues if i.get("severity") == "warning"]
+        has_feedback = len(critical_issues) > 0 or len(warning_issues) > 0
+
+        return {
+            "success": True,
+            "content": heal_result.content,
+            "issues": issues,
+            "critical_count": len(critical_issues),
+            "warning_count": len(warning_issues),
+            "suggestion_count": len([i for i in issues if i.get("severity") == "suggestion"]),
+            "has_feedback": has_feedback,
+            "errors_count": 0,
+            "tokens_used": heal_result.total_tokens,
+            "files_changed": heal_result.files_changed,
+            "devil_passed": heal_result.passed,
+        }
     else:
-        compact_content = result.content[:3000]
+        # Non-self-healing: just run once
+        passed, issues, content, tokens_used = check_fn()
+        critical_issues = extract_critical_issues(issues)
+        warning_issues = [i for i in issues if i.get("severity") == "warning"]
+        has_feedback = len(critical_issues) > 0 or len(warning_issues) > 0
 
-    memory.write(MemoryEntry(
-        timestamp=time.time(),
-        phase="devil",
-        agent="devil_advocate",
-        type="devil_review",
-        content=compact_content,
-        metadata={
-            "model": result.model,
-            "aggressive": aggressive,
-            "issues_count": len(issues),
-            "duration": duration,
-        },
-    ))
+        # Track cost for non-self-heal path
+        if cost_manager and tokens_used:
+            cost_manager.add_cost(provider_name, tokens_used)
 
-    # Count issues by severity
-    critical_issues = [i for i in issues if i.get("severity") == "critical"]
-    warning_issues = [i for i in issues if i.get("severity") == "warning"]
-    suggestion_issues = [i for i in issues if i.get("severity") == "suggestion"]
-
-    # Determine if there's actionable feedback (for <-> operator)
-    has_feedback = len(critical_issues) > 0 or len(warning_issues) > 0
-
-    return {
-        "success": result.success,
-        "content": result.content,
-        "issues": issues,
-        "critical_count": len(critical_issues),
-        "warning_count": len(warning_issues),
-        "suggestion_count": len(suggestion_issues),
-        "has_feedback": has_feedback,
-        "errors_count": 0,
-        "tokens_used": result.tokens_used,
-        "files_changed": previous.get("files_changed", []),
-        "devil_passed": len(critical_issues) == 0,
-    }
+        return {
+            "success": True,
+            "content": content,
+            "issues": issues,
+            "critical_count": len(critical_issues),
+            "warning_count": len(warning_issues),
+            "suggestion_count": len([i for i in issues if i.get("severity") == "suggestion"]),
+            "has_feedback": has_feedback,
+            "errors_count": 0,
+            "tokens_used": tokens_used,
+            "files_changed": previous.get("files_changed", []),
+            "devil_passed": len(critical_issues) == 0,
+        }
 
 
 # Number of characters to search after issue header for category extraction
