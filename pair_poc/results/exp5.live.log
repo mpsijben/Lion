@@ -1,0 +1,19 @@
+11:43:43 [runner] experiment=exp5 home_mode=system heartbeat=2.0s
+11:43:43 [claude] start
+11:43:43 [claude] spawned
+11:44:03 [claude] chunk#1 ```python """Quick and dirty auth module - NOT FOR PRODUCTION USE"""  import hashlib import secrets 
+11:44:03 [claude] heartbeat elapsed=19s chunks=1
+11:44:04 [claude] done chunks=1 ttft_ms=19999
+11:44:04 [gemini] start
+11:44:04 [gemini] spawned
+11:44:31 [gemini] chunk#1 Uses weak SHA-256 hashing; use a slow algorithm like Argon2 or bcrypt to prevent brute-force attacks
+11:44:31 [gemini] heartbeat elapsed=26s chunks=1
+11:44:31 [gemini] terminate reason=timeout
+11:44:31 [gemini] done chunks=1 ttft_ms=26868
+11:44:31 [gemini] start
+11:44:31 [gemini] spawned
+11:45:10 [gemini] chunk#1 ```python import bcrypt  def _hash_password(password: str, salt: str) -> str:     # The 'salt' param
+11:45:10 [gemini] heartbeat elapsed=39s chunks=1
+11:45:10 [gemini] done chunks=1 ttft_ms=39513
+11:45:25 [claude] chunk#1 ```python """Quick and dirty auth module - NOT FOR PRODUCTION USE"""  import bcrypt import secrets i
+11:45:25 [claude] heartbeat elapsed=15s chunks=1

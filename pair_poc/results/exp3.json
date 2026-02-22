@@ -1,0 +1,178 @@
+{
+  "experiment": "exp3",
+  "home_mode": "system",
+  "timestamp": 1771755486,
+  "matrix": [
+    {
+      "lead": "claude",
+      "eye": "gemini",
+      "lead_run": {
+        "name": "claude",
+        "session_id": "dcf2cf73-7bfd-4fd4-b00c-184315da6dde",
+        "ttft_ms": 4004,
+        "chunk_count": 2,
+        "errors": [],
+        "output": [
+          "I'll write a quick and dirty Python authentication system for you.",
+          "It seems you haven't granted write permissions yet. Once you do, the file will contain a simple auth system with:\n\n- **`AuthSystem`** class with:\n  - `register(username, password)` - creates a new user with salted SHA-256 password hash\n  - `login(username, password)` - returns a session token on success\n  - `logout(token)` - invalidates a session\n  - `get_current_user(token)` - returns username for a valid token\n  - `is_authenticated(token)` - checks if token is valid\n\n- **In-memory storage** using dictionaries (no database needed)\n- **Salted password hashing** using `secrets` and `hashlib`\n- **Demo code** in `__main__` that shows usage\n\nRun it with `python auth.py` to see the demo output."
+        ]
+      },
+      "eye_run": {
+        "name": "gemini",
+        "session_id": null,
+        "ttft_ms": 14378,
+        "chunk_count": 1,
+        "errors": [],
+        "output": [
+          "SHA-256 is too fast for password hashing; use slow algorithms like Argon2 or bcrypt to resist brute-force attacks."
+        ]
+      }
+    },
+    {
+      "lead": "claude",
+      "eye": "codex",
+      "lead_run": {
+        "name": "claude",
+        "session_id": "9931574e-2f05-4a48-9c38-38f0c20dfaaf",
+        "ttft_ms": 4565,
+        "chunk_count": 2,
+        "errors": [],
+        "output": [
+          "I'll write a quick and dirty Python authentication system for you.",
+          "Here's the quick and dirty Python auth system:\n\n```python\n\"\"\"Quick and dirty authentication system.\"\"\"\n\nimport hashlib\nimport secrets\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass User:\n    username: str\n    password_hash: str\n    salt: str\n\n\n@dataclass\nclass AuthSystem:\n    users: dict[str, User] = field(default_factory=dict)\n    sessions: dict[str, str] = field(default_factory=dict)  # token -> username\n\n    def _hash_password(self, password: str, salt: str) -> str:\n        return hashlib.sha256((password + salt).encode()).hexdigest()\n\n    def register(self, username: str, password: str) -> bool:\n        if username in self.users:\n            return False\n        salt = secrets.token_hex(16)\n        password_hash = self._hash_password(password, salt)\n        self.users[username] = User(username, password_hash, salt)\n        return True\n\n    def login(self, username: str, password: str) -> str | None:\n        user = self.users.get(username)\n        if not user:\n            return None\n        if self._hash_password(password, user.salt) != user.password_hash:\n            return None\n        token = secrets.token_hex(32)\n        self.sessions[token] = username\n        return token\n\n    def logout(self, token: str) -> bool:\n        if token in self.sessions:\n            del self.sessions[token]\n            return True\n        return False\n\n    def get_current_user(self, token: str) -> str | None:\n        return self.sessions.get(token)\n\n    def is_authenticated(self, token: str) -> bool:\n        return token in self.sessions\n\n\nif __name__ == \"__main__\":\n    auth = AuthSystem()\n    \n    # Register & login\n    auth.register(\"alice\", \"password123\")\n    token = auth.login(\"alice\", \"password123\")\n    print(\"Logged in:\", auth.get_current_user(token))\n    \n    # Logout\n    auth.logout(token)\n    print(\"After logout:\", auth.is_authenticated(token))\n```\n\n**Features:**\n- Password hashing with SHA-256 + random salt\n- Session tokens for authenticated users\n- `register()`, `login()`, `logout()`, `is_authenticated()`, `get_current_user()`\n\n**Limitations (it's quick and dirty):**\n- In-memory storage (no persistence)\n- No session expiration\n- No rate limiting\n- For production, use bcrypt/argon2 instead of SHA-256"
+        ]
+      },
+      "eye_run": {
+        "name": "codex",
+        "session_id": "019c84d6-6a3c-75c3-9ff9-f3bbe2c6730b",
+        "ttft_ms": 4017,
+        "chunk_count": 2,
+        "errors": [],
+        "output": [
+          "**Highlighting weak password hashing**",
+          "Password storage is insecure: `hashlib.sha256(password + salt)` is a fast hash with no work factor, making offline brute-force attacks feasible if the user store is leaked."
+        ]
+      }
+    },
+    {
+      "lead": "gemini",
+      "eye": "claude",
+      "lead_run": {
+        "name": "gemini",
+        "session_id": null,
+        "ttft_ms": 54267,
+        "chunk_count": 1,
+        "errors": [],
+        "output": [
+          "I currently lack the permissions to create new files or run shell commands directly in this environment. However, I have drafted the \"quick and dirty\" Python authentication system you requested below.\n\nYou can save this code to a file named `simple_auth.py` and run it with `python simple_auth.py`.\n\n### `simple_auth.py`\n\nThis script uses a local `users.json` file to store user credentials. It salts and hashes passwords using SHA-256 (via the standard `hashlib` library) for basic security.\n\n```python\nimport hashlib\nimport json\nimport os\nimport secrets\nfrom getpass import getpass\n\nclass SimpleAuth:\n    def __init__(self, db_file=\"users.json\"):\n        self.db_file = db_file\n        self.users = self._load_users()\n\n    def _load_users(self):\n        \"\"\"Load users from the JSON database file.\"\"\"\n        if not os.path.exists(self.db_file):\n            return {}\n        try:\n            with open(self.db_file, \"r\") as f:\n                return json.load(f)\n        except json.JSONDecodeError:\n            return {}\n\n    def _save_users(self):\n        \"\"\"Save users to the JSON database file.\"\"\"\n        with open(self.db_file, \"w\") as f:\n            json.dump(self.users, f, indent=4)\n\n    def _hash_password(self, password, salt):\n        \"\"\"Hash a password with a salt using SHA-256.\"\"\"\n        return hashlib.sha256((password + salt).encode()).hexdigest()\n\n    def register(self, username, password):\n        \"\"\"Register a new user.\"\"\"\n        if username in self.users:\n            print(f\"Error: User '{username}' already exists!\")\n            return False\n        \n        # Generate a random salt\n        salt = secrets.token_hex(16)\n        # Hash the password with the salt\n        hashed_pw = self._hash_password(password, salt)\n        \n        self.users[username] = {\n            \"password\": hashed_pw,\n            \"salt\": salt\n        }\n        self._save_users()\n        print(f\"User '{username}' registered successfully!\")\n        return True\n\n    def login(self, username, password):\n        \"\"\"Authenticate a user.\"\"\"\n        if username not in self.users:\n            print(\"Error: User not found!\")\n            return False\n        \n        stored_data = self.users[username]\n        stored_pw = stored_data[\"password\"]\n        salt = stored_data[\"salt\"]\n        \n        # Verify the password\n        if self._hash_password(password, salt) == stored_pw:\n            print(f\"Success: Welcome back, {username}!\")\n            return True\n        else:\n            print(\"Error: Invalid password!\")\n            return False\n\nif __name__ == \"__main__\":\n    auth = SimpleAuth()\n    print(\"--- Quick Auth System ---\")\n    while True:\n        action = input(\"\\nEnter action (register/login/exit): \").strip().lower()\n        if action == \"exit\":\n            print(\"Goodbye!\")\n            break\n        elif action in [\"register\", \"login\"]:\n            username = input(\"Username: \").strip()\n            if not username:\n                print(\"Username cannot be empty.\")\n                continue\n            password = getpass(\"Password: \")\n            \n            if action == \"register\":\n                auth.register(username, password)\n            else:\n                auth.login(username, password)\n        else:\n            print(\"Invalid action. Please choose 'register', 'login', or 'exit'.\")\n```"
+        ]
+      },
+      "eye_run": {
+        "name": "claude",
+        "session_id": "4a62d780-d132-455a-b55c-ea289c5ea417",
+        "ttft_ms": 4384,
+        "chunk_count": 1,
+        "errors": [],
+        "output": [
+          "**Finding:** Weak password hashing algorithm. SHA-256 is not suitable for password hashing\u2014use `bcrypt`, `scrypt`, or `argon2` instead. SHA-256 is fast by design, making it vulnerable to brute-force attacks even with salting."
+        ]
+      }
+    },
+    {
+      "lead": "gemini",
+      "eye": "codex",
+      "lead_run": {
+        "name": "gemini",
+        "session_id": null,
+        "ttft_ms": 59207,
+        "chunk_count": 1,
+        "errors": [],
+        "output": [
+          "Since I currently lack the permissions to write files directly to your system, I have generated the code for a \"quick and dirty\" authentication system using **HTTP Basic Auth** with **FastAPI**. This approach is standard, built-in, and easy to test with a browser or `curl`.\n\nYou can integrate this into your project by creating `src/lion/auth.py` and updating `src/lion/api.py`.\n\n### 1. Create `src/lion/auth.py`\n\nThis module handles the authentication logic using `secrets` for safe comparison (to prevent timing attacks) and `HTTPBasic` for the standard header protocol.\n\n```python\n\"\"\"\nAuthentication module for Lion API.\n\"\"\"\nimport secrets\nfrom fastapi import Depends, HTTPException, status\nfrom fastapi.security import HTTPBasic, HTTPBasicCredentials\n\nsecurity = HTTPBasic()\n\ndef get_current_username(credentials: HTTPBasicCredentials = Depends(security)):\n    \"\"\"\n    Validates the username and password using HTTP Basic Auth.\n    \"\"\"\n    # TODO: Replace with environment variables or a secure database lookup for production.\n    correct_username = secrets.compare_digest(credentials.username, \"admin\")\n    correct_password = secrets.compare_digest(credentials.password, \"secret\")\n\n    if not (correct_username and correct_password):\n        raise HTTPException(\n            status_code=status.HTTP_401_UNAUTHORIZED,\n            detail=\"Incorrect email or password\",\n            headers={\"WWW-Authenticate\": \"Basic\"},\n        )\n    return credentials.username\n```\n\n### 2. Update `src/lion/api.py`\n\nUpdate your existing `api.py` to use the new authentication dependency. I've added a `/secure` endpoint to demonstrate the protection.\n\n```python\n\"\"\"\nHello World API for Lion.\n\nA simple FastAPI-based REST API.\n\nUsage:\n    uvicorn src.lion.api:app --reload\n\nOr run directly:\n    python -m src.lion.api\n\"\"\"\n\nfrom fastapi import FastAPI, Depends\nfrom .auth import get_current_username\n\napp = FastAPI(\n    title=\"Lion API\",\n    description=\"Hello World API for the Lion orchestration system\",\n    version=\"0.1.0\"\n)\n\n\n@app.get(\"/\")\ndef root():\n    \"\"\"Root endpoint returning a welcome message (Public).\"\"\"\n    return {\"message\": \"Hello, World!\", \"service\": \"Lion API\"}\n\n\n@app.get(\"/health\")\ndef health():\n    \"\"\"Health check endpoint (Public).\"\"\"\n    return {\"status\": \"healthy\"}\n\n\n@app.get(\"/hello/{name}\")\ndef hello(name: str):\n    \"\"\"Greet a user by name (Public).\"\"\"\n    return {\"message\": f\"Hello, {name}!\"}\n\n\n@app.get(\"/secure\")\ndef secure_endpoint(username: str = Depends(get_current_username)):\n    \"\"\"\n    Protected endpoint requiring HTTP Basic Auth.\n    \"\"\"\n    return {\"message\": \"You are authenticated!\", \"username\": username}\n\n\nif __name__ == \"__main__\":\n    import uvicorn\n    # Use 'src.lion.api:app' if running from project root context\n    uvicorn.run(app, host=\"0.0.0.0\", port=8000)\n```\n\n### How to Test\n\n1.  **Run the API:**\n    ```bash\n    uvicorn src.lion.api:app --reload\n    ```\n\n2.  **Test with Curl (or Browser):**\n    ```bash\n    # Should be 401 Unauthorized\n    curl -v http://localhost:8000/secure\n\n    # Should be 200 OK\n    curl -v -u admin:secret http://localhost:8000/secure\n    ```"
+        ]
+      },
+      "eye_run": {
+        "name": "codex",
+        "session_id": "019c84d8-4ac8-7f92-8307-730729ee8ce3",
+        "ttft_ms": 5384,
+        "chunk_count": 2,
+        "errors": [],
+        "output": [
+          "**Flagging hardcoded credentials**",
+          "Hardcoded static credentials (`admin` / `secret`) in `get_current_username` are a critical auth flaw: anyone with code access (or guessed defaults) can authenticate; use per-environment secret management with stored password hashes instead."
+        ]
+      }
+    },
+    {
+      "lead": "codex",
+      "eye": "claude",
+      "lead_run": {
+        "name": "codex",
+        "session_id": "019c84d8-6049-7a31-b8d9-3720b4ff617c",
+        "ttft_ms": 5188,
+        "chunk_count": 16,
+        "errors": [],
+        "output": [
+          "**Planning minimal Python auth**",
+          "I\u2019ll add a minimal Python auth system directly in this repo with register/login and token-based session validation, then share how to run it. I\u2019m first checking the current project structure so I can place it cleanly.",
+          "**Scoping implementation location**",
+          "I found this is an existing Python package, so I\u2019ll keep the auth system isolated as a small module plus a tiny CLI demo to avoid breaking current behavior. Next I\u2019ll check dependencies and coding style before editing.",
+          "**Designing quick FastAPI auth**",
+          "I\u2019m now adding a self-contained `FastAPI` auth module (`register`, `login`, `me`) backed by SQLite with hashed passwords and expiring bearer tokens, plus a focused test file so it\u2019s runnable immediately.",
+          "**Planning default dependency fix and tests**",
+          "The auth module is in place; I\u2019m adding a small API test suite now to verify the happy path and invalid credential handling before I run it.",
+          "**Running targeted tests to verify environment**",
+          "**Planning fastapi removal**",
+          "I hit a runtime incompatibility in this environment (`fastapi`/`pydantic` vs Python 3.14 dev), so I\u2019m switching this to a framework-free auth module using only the standard library to keep it runnable and testable here.",
+          "**Rewriting tests**",
+          "I\u2019ve replaced the framework dependency with a standard-library implementation and updated tests accordingly; I\u2019m running the new test file now.",
+          "**Checking changes before commit**",
+          "**Summarizing final changes**",
+          "Implemented a quick-and-dirty Python auth system using only the standard library.\n\n### Added\n- `src/lion/quick_auth.py`\n  - `AuthSystem` with:\n  - `register(username, password)`\n  - `login(username, password) -> token`\n  - `validate_token(token) -> username | None`\n  - `logout(token)`\n  - SQLite-backed `users` + `sessions` tables\n  - PBKDF2 password hashing (`sha256`) with per-user salt\n  - Expiring session tokens (24h), storing only token hashes\n\n- `tests/test_quick_auth.py`\n  - Register/login/validate/logout flow\n  - Invalid credentials handling\n  - Duplicate username handling\n  - Expired token rejection\n\n### Verification\n- Ran: `pytest -q tests/test_quick_auth.py`\n- Result: `4 passed`\n\n### Minimal usage\n```python\nfrom lion.quick_auth import AuthSystem\n\nauth = AuthSystem(\"auth.db\")\nauth.register(\"alice\", \"supersecret123\")\ntoken = auth.login(\"alice\", \"supersecret123\")\nuser = auth.validate_token(token)  # \"alice\" or None\nauth.logout(token)\n```"
+        ]
+      },
+      "eye_run": {
+        "name": "claude",
+        "session_id": "11c35caa-2fea-4109-9519-70327a0a67df",
+        "ttft_ms": 3101,
+        "chunk_count": 2,
+        "errors": [],
+        "output": [
+          "I'll review the authentication code for security issues.",
+          "**Timing attack on login**: Line 79-80 returns immediately when username not found, but lines 82-83 perform expensive PBKDF2 before returning for wrong password. Attackers can enumerate valid usernames by measuring response time. Fix: always run `_verify_password` with a dummy hash when user not found."
+        ]
+      }
+    },
+    {
+      "lead": "codex",
+      "eye": "gemini",
+      "lead_run": {
+        "name": "codex",
+        "session_id": "019c84da-17e3-73a2-b4fe-2443be37c957",
+        "ttft_ms": 3070,
+        "chunk_count": 8,
+        "errors": [],
+        "output": [
+          "**Planning minimal auth system**",
+          "I\u2019ll put together a minimal Python auth module in this repo with basic `register`, `login`, and token-based session validation, then share how to run it. I\u2019m checking the workspace layout first so I place it in the right spot.",
+          "**Inspecting existing auth script**",
+          "I found there\u2019s already a `quick_auth` module in this project, so I\u2019m checking it first and either reusing or replacing it with a cleaner \u201cquick and dirty\u201d implementation instead of adding duplicate auth code.",
+          "**Verifying existing authentication implementation**",
+          "The repo already contains a full quick-and-dirty auth implementation at `src/lion/quick_auth.py`, so I\u2019m validating it with its tests now and will give you a runnable snippet immediately after.",
+          "**Providing concise final summary**",
+          "A quick-and-dirty Python auth system is already in this repo:\n\n- Implementation: `src/lion/quick_auth.py`\n- Tests: `tests/test_quick_auth.py` (I ran them: 4 passed)\n\nMinimal usage:\n\n```python\nfrom lion.quick_auth import AuthSystem\n\nauth = AuthSystem(db_path=\"auth.db\")\nauth.register(\"alice\", \"supersecret123\")\ntoken = auth.login(\"alice\", \"supersecret123\")\n\nprint(auth.validate_token(token))  # \"alice\"\nauth.logout(token)\nprint(auth.validate_token(token))  # None\n```\n\nIf you want, I can also add a tiny CLI wrapper (`register/login/whoami/logout`) around it."
+        ]
+      },
+      "eye_run": {
+        "name": "gemini",
+        "session_id": null,
+        "ttft_ms": 53955,
+        "chunk_count": 1,
+        "errors": [],
+        "output": [
+          "Login allows username enumeration via timing analysis."
+        ]
+      }
+    }
+  ]
+}

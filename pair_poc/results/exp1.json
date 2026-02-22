@@ -1,0 +1,37 @@
+{
+  "experiment": "exp1",
+  "home_mode": "system",
+  "timestamp": 1771753207,
+  "runs": [
+    {
+      "name": "claude",
+      "session_id": "becd0df4-04cf-4d9a-942f-ecba4de19137",
+      "ttft_ms": 6078,
+      "chunk_count": 1,
+      "errors": [],
+      "output": [
+        "```python\ndef quicksort(arr):\n    if len(arr) <= 1:\n        return arr\n    \n    pivot = arr[len(arr) // 2]\n    left = [x for x in arr if x < pivot]\n    middle = [x for x in arr if x == pivot]\n    right = [x for x in arr if x > pivot]\n    \n    return quicksort(left) + middle + quicksort(right)\n```\n\nThis implementation:\n- Uses the middle element as the pivot\n- Creates three partitions: elements less than, equal to, and greater than the pivot\n- Recursively sorts the left and right partitions\n- Concatenates the results\n\nFor an in-place version:\n\n```python\ndef quicksort_inplace(arr, low=0, high=None):\n    if high is None:\n        high = len(arr) - 1\n    \n    if low < high:\n        pivot_index = partition(arr, low, high)\n        quicksort_inplace(arr, low, pivot_index - 1)\n        quicksort_inplace(arr, pivot_index + 1, high)\n    \n    return arr\n\ndef partition(arr, low, high):\n    pivot = arr[high]\n    i = low - 1\n    \n    for j in range(low, high):\n        if arr[j] <= pivot:\n            i += 1\n            arr[i], arr[j] = arr[j], arr[i]\n    \n    arr[i + 1], arr[high] = arr[high], arr[i + 1]\n    return i + 1\n```"
+      ]
+    },
+    {
+      "name": "gemini",
+      "session_id": null,
+      "ttft_ms": 8450,
+      "chunk_count": 1,
+      "errors": [],
+      "output": [
+        "```python\ndef quicksort(arr):\n    if len(arr) <= 1:\n        return arr\n    else:\n        pivot = arr[len(arr) // 2]\n        left = [x for x in arr if x < pivot]\n        middle = [x for x in arr if x == pivot]\n        right = [x for x in arr if x > pivot]\n        return quicksort(left) + middle + quicksort(right)\n\n```"
+      ]
+    },
+    {
+      "name": "codex",
+      "session_id": "019c84b8-6f0f-7200-95cd-7f69a9c17765",
+      "ttft_ms": 2234,
+      "chunk_count": 1,
+      "errors": [],
+      "output": [
+        "```python\ndef quicksort(arr):\n    if len(arr) <= 1:\n        return arr\n\n    pivot = arr[len(arr) // 2]\n    left = [x for x in arr if x < pivot]\n    middle = [x for x in arr if x == pivot]\n    right = [x for x in arr if x > pivot]\n\n    return quicksort(left) + middle + quicksort(right)\n```"
+      ]
+    }
+  ]
+}

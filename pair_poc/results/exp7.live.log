@@ -1,0 +1,14 @@
+11:50:34 [runner] experiment=exp7 home_mode=system heartbeat=2.0s
+11:50:34 [claude] start
+11:50:34 [claude] spawned
+11:50:56 [claude] chunk#1  ```python """ Quick-and-dirty auth module with login/register/reset functionality. WARNING: This is
+11:50:56 [claude] heartbeat elapsed=22s chunks=1
+11:50:57 [claude] done chunks=1 ttft_ms=22303
+11:50:57 [gemini] start
+11:50:57 [gemini] spawned
+11:51:33 [gemini] chunk#1 1. **Critical Risk:** Unsalted SHA-256 hashing allows trivial reverse-engineering of passwords via r
+11:51:33 [gemini] heartbeat elapsed=36s chunks=1
+11:51:33 [gemini] terminate reason=timeout
+11:51:33 [gemini] done chunks=1 ttft_ms=36237
+11:51:54 [claude] chunk#1 ```python """ Quick-and-dirty auth module with login/register/reset functionality. WARNING: This is 
+11:51:54 [claude] heartbeat elapsed=20s chunks=1

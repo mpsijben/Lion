@@ -1,0 +1,93 @@
+{
+  "experiment": "exp0",
+  "home_mode": "system",
+  "timestamp": 1771752347,
+  "checks": [
+    {
+      "name": "claude_version",
+      "command": [
+        "claude",
+        "--version"
+      ],
+      "success": true,
+      "exit_code": 0,
+      "duration_ms": 825,
+      "stdout": "2.1.3 (Claude Code)",
+      "stderr": "",
+      "category": "ok"
+    },
+    {
+      "name": "gemini_version",
+      "command": [
+        "gemini",
+        "--version"
+      ],
+      "success": true,
+      "exit_code": 0,
+      "duration_ms": 1897,
+      "stdout": "0.16.0",
+      "stderr": "",
+      "category": "ok"
+    },
+    {
+      "name": "codex_version",
+      "command": [
+        "codex",
+        "--version"
+      ],
+      "success": true,
+      "exit_code": 0,
+      "duration_ms": 107,
+      "stdout": "codex-cli 0.104.0",
+      "stderr": "",
+      "category": "ok"
+    },
+    {
+      "name": "claude_stream_test",
+      "command": [
+        "claude",
+        "-p",
+        "Say hello",
+        "--verbose",
+        "--output-format",
+        "stream-json"
+      ],
+      "success": true,
+      "exit_code": 0,
+      "duration_ms": 4233,
+      "stdout": "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/Users/mennosijben/Projects/lion\",\"session_id\":\"45ee7f48-712f-46e5-9330-26ed1b8ad336\",\"tools\":[\"Task\",\"TaskOutput\",\"Bash\",\"Glob\",\"Grep\",\"ExitPlanMode\",\"Read\",\"Edit\",\"Write\",\"NotebookEdit\",\"WebFetch\",\"TodoWrite\",\"WebSearch\",\"KillShell\",\"AskUserQuestion\",\"Skill\",\"EnterPlanMode\",\"MCPSearch\"],\"mcp_servers\":[],\"model\":\"claude-opus-4-5-20251101\",\"permissionMode\":\"default\",\"slash_commands\":[\"compact\",\"context\",\"cost\",\"init\",\"pr-comments\",\"release-notes\",\"review\",\"security-review\"],\"apiKeySource\":\"none\",\"claude_code_version\":\"2.1.3\",\"output_style\":\"default\",\"agents\":[\"Bash\",\"general-purpose\",\"statusline-setup\",\"Explore\",\"Plan\"],\"skills\":[],\"plugins\":[],\"uuid\":\"afffe0ff-8836-4281-b22e-108f4eb37509\"}\n{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-4-5-20251101\",\"id\":\"msg_01BLhLwbxXoiscXaMXU6TBr2\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hello! How can I help you today?\"}],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":3202,\"cache_read_input_tokens\":14891,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":3202},\"output_tokens\":3,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"45ee7f48-712f-46e5-9330-26ed1b8ad336\",\"uuid\":\"b9ff8737-d991-4e37-8e37-764c18c650ad\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":1859,\"duration_api_ms\":3360,\"num_turns\":1,\"result\":\"Hello! How can I help you today?\",\"session_id\":\"45ee7f48-712f-46e5-9330-26ed1b8ad336\",\"total_cost_usd\":0.05449425,\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":3202,\"cache_read_input_tokens\":14891,\"output_tokens\":12,\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":3202,\"ephemeral_5m_input_tokens\":0}},\"modelUsage\":{\"claude-opus-4-5-20251101\":{\"inputTokens\":6,\"outputTokens\":29,\"cacheReadInputTokens\":14891,\"cacheCreationInputTokens\":7407,\"webSearchRequests\":0,\"costUSD\":0.05449425,\"contextWindow\":200000,\"maxOutputTokens\":64000}},\"permission_denials\":[],\"uuid\":\"2d91f39b-1486-496f-815f-fa4a9418cbd2\"}",
+      "stderr": "",
+      "category": "ok"
+    },
+    {
+      "name": "gemini_json_test",
+      "command": [
+        "gemini",
+        "-o",
+        "json",
+        "Say hello"
+      ],
+      "success": true,
+      "exit_code": 0,
+      "duration_ms": 8196,
+      "stdout": "{\n  \"response\": \"Hello! How can I help you today?\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2102\n        },\n        \"tokens\": {\n          \"prompt\": 3706,\n          \"candidates\": 52,\n          \"total\": 3904,\n          \"cached\": 0,\n          \"thoughts\": 146,\n          \"tool\": 0\n        }\n      },\n      \"gemini-2.5-flash\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 1381\n        },\n        \"tokens\": {\n          \"prompt\": 7930,\n          \"candidates\": 9,\n          \"total\": 7960,\n          \"cached\": 0,\n          \"thoughts\": 21,\n          \"tool\": 0\n        }\n      }\n    },\n    \"tools\": {\n      \"totalCalls\": 0,\n      \"totalSuccess\": 0,\n      \"totalFail\": 0,\n      \"totalDurationMs\": 0,\n      \"totalDecisions\": {\n        \"accept\": 0,\n        \"reject\": 0,\n        \"modify\": 0,\n        \"auto_accept\": 0\n      },\n      \"byName\": {}\n    },\n    \"files\": {\n      \"totalLinesAdded\": 0,\n      \"totalLinesRemoved\": 0\n    }\n  }\n}",
+      "stderr": "Loaded cached credentials.",
+      "category": "ok"
+    },
+    {
+      "name": "codex_json_test",
+      "command": [
+        "codex",
+        "exec",
+        "--json",
+        "Say hello"
+      ],
+      "success": true,
+      "exit_code": 0,
+      "duration_ms": 1546,
+      "stdout": "{\"type\":\"thread.started\",\"thread_id\":\"019c84ab-5397-7582-892a-71d778d56d70\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"Hello!\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":7562,\"cached_input_tokens\":6528,\"output_tokens\":18}}",
+      "stderr": "",
+      "category": "ok"
+    }
+  ]
+}

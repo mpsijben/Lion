@@ -1,0 +1,105 @@
+{
+  "experiment": "exp2",
+  "home_mode": "system",
+  "timestamp": 1771755015,
+  "runs": [
+    {
+      "marker_token": "LION-CTX-CLAUDE-1771754944",
+      "initial": {
+        "name": "claude",
+        "session_id": "21049db1-d9e4-488b-964e-3130e62fbc56",
+        "ttft_ms": 7973,
+        "chunk_count": 1,
+        "errors": [],
+        "output": [
+          "```python\n# auth_system.py - Authentication System Pseudocode\n\ndef register(username, email, password):\n    if user_exists(username) or email_exists(email):\n        return Error(\"User or email already exists\")\n    hashed_password = hash_password(password)\n    user = create_user(username, email, hashed_password)\n    send_verification_email(user.email, generate_verification_token(user))\n    return Success(\"Registration complete, please verify email\")\n\ndef login(username, password):\n    user = find_user_by_username(username)\n    if not user or not verify_password(password, user.hashed_password):\n        return Error(\"Invalid credentials\")\n    if not user.email_verified:\n        return Error(\"Please verify your email first\")\n    session_token = generate_session_token(user)\n    store_session(session_token, user.id, expiry=24*60*60)\n    return Success(session_token)\n\ndef request_password_reset(email):\n    user = find_user_by_email(email)\n    if not user:\n        return Success(\"If email exists, reset link sent\")\n    reset_token = generate_reset_token(user)\n    store_reset_token(reset_token, user.id, expiry=3600)\n    send_reset_email(email, reset_token)\n    return Success(\"If email exists, reset link sent\")\n\ndef reset_password(reset_token, new_password):\n    user_id = validate_reset_token(reset_token)\n    if not user_id:\n        return Error(\"Invalid or expired reset token\")\n    hashed_password = hash_password(new_password)\n    update_user_password(user_id, hashed_password)\n    invalidate_reset_token(reset_token)\n    invalidate_all_sessions(user_id)\n    return Success(\"Password reset successful\")\n```"
+        ]
+      },
+      "resume": {
+        "name": "claude",
+        "resumed": true,
+        "chunks": [
+          "```python\ndef logout(session_token):\n    if not validate_session(session_token):\n        return Error(\"Invalid session\")\n    invalidate_session(session_token)\n    return Success(\"Logged out successfully\")\n\ndef verify_email(verification_token):\n    user_id = validate_verification_token(verification_token)\n    if not user_id:\n        return Error(\"Invalid or expired verification token\")\n    mark_email_verified(user_id)\n    invalidate_verification_token(verification_token)\n    return Success(\"Email verified successfully\")\n\ndef change_password(session_token, old_password, new_password):\n    user = get_user_from_session(session_token)\n    if not user or not verify_password(old_password, user.hashed_password):\n        return Error(\"Invalid credentials\")\n    update_user_password(user.id, hash_password(new_password))\n    invalidate_all_sessions_except(user.id, session_token)\n    return Success(\"Password changed successfully\")\n```"
+        ],
+        "ttft_ms": 5000,
+        "errors": [],
+        "restart_latency_ms": 9879
+      },
+      "context_check": {
+        "prompt": "What token did I ask you to remember earlier in this conversation? Reply with only that exact token.",
+        "output": [
+          "LION-CTX-CLAUDE-1771754944"
+        ],
+        "ttft_ms": 3727,
+        "errors": [],
+        "context_preserved": true
+      }
+    },
+    {
+      "marker_token": "LION-CTX-GEMINI-1771754962",
+      "initial": {
+        "name": "gemini",
+        "session_id": null,
+        "ttft_ms": 12922,
+        "chunk_count": 1,
+        "errors": [],
+        "output": [
+          "```python\n# auth_system.py (Pseudocode)\n\nclass User:\n    def __init__(self, username, password_hash, email):\n        self.username = username\n        self.password_hash = password_hash\n        self.email = email\n        self.is_active = False # For email verification\n        self.reset_token = None\n        self.reset_token_expiry = None\n\nclass AuthService:\n    def __init__(self, user_database):\n        self.user_database = user_database # e.g., a dictionary or database connection\n\n    def register_user(self, username, password, email):\n        if self.user_database.user_exists(username) or self.user_database.email_exists(email):\n            return \"Error: User or email already exists\"\n        hashed_password = hash_password(password)\n        new_user = User(username, hashed_password, email)\n        self.user_database.add_user(new_user)\n        send_verification_email(email, new_user.username)\n        return \"Registration successful. Please verify your email.\"\n\n    def login_user(self, username, password):\n        user = self.user_database.get_user_by_username(username)\n        if not user or not user.is_active:\n            return \"Error: Invalid credentials or unverified account\"\n        if verify_password(password, user.password_hash):\n            return \"Login successful\"\n        return \"Error: Invalid credentials\"\n\n    def request_password_reset(self, email):\n        user = self.user_database.get_user_by_email(email)\n        if not user:\n            return \"Error: Email not found\"\n        token = generate_unique_token()\n        user.reset_token = token\n        user.reset_token_expiry = datetime.now() + timedelta(hours=1)\n        self.user_database.update_user(user)\n        send_reset_email(email, token)\n        return \"Password reset link sent to your email.\"\n\n    def reset_password(self, token, new_password):\n        user = self.user_database.get_user_by_reset_token(token)\n        if not user or datetime.now() > user.reset_token_expiry:\n            return \"Error: Invalid or expired token\"\n        user.password_hash = hash_password(new_password)\n        user.reset_token = None\n        user.reset_token_expiry = None\n        self.user_database.update_user(user)\n        return \"Password reset successfully.\"\n\n# Helper functions (placeholder)\ndef hash_password(password): return \"hashed_\" + password\ndef verify_password(password, hashed_password): return (\"hashed_\" + password) == hashed_password\ndef send_verification_email(email, username): pass\ndef generate_unique_token(): return \"random_token\"\ndef send_reset_email(email, token): pass\n```"
+        ]
+      },
+      "resume": {
+        "name": "gemini",
+        "resumed": true,
+        "chunks": [
+          "```python\n    def verify_email(self, username, verification_code):\n        user = self.user_database.get_user_by_username(username)\n        if not user or not check_verification_code(user, verification_code):\n            return \"Error: Invalid verification code\"\n        user.is_active = True\n        self.user_database.update_user(user)\n        return \"Email verified successfully. You can now log in.\"\n\n    def logout_user(self, session_id):\n        # Invalidate session or clear token\n        invalidate_session(session_id)\n        return \"Logged out successfully.\"\n\n    def change_password(self, username, old_password, new_password):\n        user = self.user_database.get_user_by_username(username)\n        if not user or not verify_password(old_password, user.password_hash):\n            return \"Error: Invalid old password\"\n        user.password_hash = hash_password(new_password)\n        self.user_database.update_user(user)\n        return \"Password changed successfully.\"\n\n# Placeholder for database interactions\nclass UserDatabase:\n    def __init__(self):\n        self.users = {}\n\n    def user_exists(self, username):\n        return username in self.users\n\n    def email_exists(self, email):\n        return any(user.email == email for user in self.users.values())\n\n    def add_user(self, user):\n        self.users[user.username] = user\n\n    def get_user_by_username(self, username):\n        return self.users.get(username)\n\n    def get_user_by_email(self, email):\n        for user in self.users.values():\n            if user.email == email:\n                return user\n        return None\n\n    def get_user_by_reset_token(self, token):\n        for user in self.users.values():\n            if user.reset_token == token:\n                return user\n        return None\n\n    def update_user(self, user):\n        self.users[user.username] = user\n\n# Helper functions for verification and session\ndef check_verification_code(user, code): return True # Simulate email verification\ndef invalidate_session(session_id): pass\n```"
+        ],
+        "ttft_ms": 11980,
+        "errors": [],
+        "restart_latency_ms": 19541
+      },
+      "context_check": {
+        "prompt": "What token did I ask you to remember earlier in this conversation? Reply with only that exact token.",
+        "output": [
+          "LION-CTX-GEMINI-1771754962"
+        ],
+        "ttft_ms": 7558,
+        "errors": [],
+        "context_preserved": true
+      }
+    },
+    {
+      "marker_token": "LION-CTX-CODEX-1771754994",
+      "initial": {
+        "name": "codex",
+        "session_id": "019c84d3-bd45-7472-9f5a-a64aadd36c90",
+        "ttft_ms": 9481,
+        "chunk_count": 1,
+        "errors": [],
+        "output": [
+          "**Providing exact 30-line pseudocode**"
+        ]
+      },
+      "resume": {
+        "name": "codex",
+        "resumed": true,
+        "chunks": [
+          "**Providing code-only pseudocode continuation**",
+          "def request_password_reset(email):\n    user = db.find_user_by_email(email)\n    if not user: return error(\"email_not_found\")\n    token = crypto.random_token()\n    db.store_reset_token(user.id, token, expires_in_minutes=15)\n    mail.send(email, f\"Reset token: {token}\")\n    return ok(\"reset_sent\")\n\ndef reset_password(email, token, new_password):\n    user = db.find_user_by_email(email)\n    if not user: return error(\"invalid_request\")\n    if not validators.strong_password(new_password): return error(\"weak_password\")\n    record = db.get_reset_token(user.id, token)\n    if not record or record.is_expired(): return error(\"invalid_or_expired_token\")\n    new_hash = crypto.hash_password(new_password)\n    db.update_password(user.id, new_hash)\n    db.delete_all_reset_tokens(user.id)\n    session.revoke_all(user.id)\n    audit.log(\"password_reset\", user_id=user.id)\n    return ok(\"password_reset_success\")"
+        ],
+        "ttft_ms": 5109,
+        "errors": [],
+        "restart_latency_ms": 11061
+      },
+      "context_check": {
+        "prompt": "What token did I ask you to remember earlier in this conversation? Reply with only that exact token.",
+        "output": [
+          "LION-CTX-CODEX-1771754994",
+          "LION-CTX-CODEX-1771754994"
+        ],
+        "ttft_ms": 2767,
+        "errors": [],
+        "context_preserved": true
+      }
+    }
+  ]
+}

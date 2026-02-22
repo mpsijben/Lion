@@ -1,0 +1,21 @@
+11:46:44 [runner] experiment=exp6 home_mode=system heartbeat=2.0s
+11:46:44 [claude] start
+11:46:44 [claude] spawned
+11:47:01 [claude] chunk#1  ```python """ Quick-and-dirty auth module with login/register/reset functionality. WARNING: This is
+11:47:01 [claude] heartbeat elapsed=16s chunks=1
+11:47:01 [claude] done chunks=1 ttft_ms=16900
+11:47:01 [gemini] start
+11:47:01 [gemini] spawned
+11:47:26 [gemini] chunk#1 Weak password hashing (SHA-256); use bcrypt or Argon2 to prevent brute-force attacks.
+11:47:26 [gemini] heartbeat elapsed=25s chunks=1
+11:47:26 [gemini] terminate reason=timeout
+11:47:26 [gemini] done chunks=1 ttft_ms=25173
+11:47:26 [codex] start
+11:47:26 [codex] spawned
+11:47:29 [codex] chunk#1 **Highlighting weak password hashing**
+11:47:29 [codex] heartbeat elapsed=2s chunks=1
+11:47:29 [codex] chunk#2 Password storage is insecure: `_hash_password` uses a single fast SHA-256 (`salt + password`) instea
+11:47:29 [codex] terminate reason=max_lines
+11:47:29 [codex] done chunks=2 ttft_ms=2195
+11:47:42 [claude] chunk#1 ```python """ Quick-and-dirty auth module with login/register/reset functionality. Uses bcrypt for s
+11:47:42 [claude] heartbeat elapsed=12s chunks=1

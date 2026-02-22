@@ -1,0 +1,30 @@
+11:58:59 [runner] experiment=exp8 home_mode=system heartbeat=2.0s
+11:58:59 [exp8] preflight eyes launched
+11:58:59 [codex] start
+11:58:59 [gemini] start
+11:58:59 [codex] spawned
+11:58:59 [exp8] lead started; waiting for first chunk
+11:58:59 [gemini] spawned
+11:59:01 [codex] chunk#1 **Providing concise top risks**
+11:59:02 [codex] chunk#2 Top three auth-code risks to watch for are broken token/session handling (weak expiry/rotation/revoc
+11:59:02 [codex] heartbeat elapsed=2s chunks=2
+11:59:02 [codex] terminate reason=max_lines
+11:59:02 [codex] done chunks=2 ttft_ms=1620
+11:59:10 [gemini] chunk#1 Top 3 risks to watch for in auth code: hardcoded credentials or secrets, improper input validation l
+11:59:10 [gemini] heartbeat elapsed=10s chunks=1
+11:59:10 [gemini] done chunks=1 ttft_ms=10942
+11:59:18 [exp8] first lead chunk seen; launching live eyes
+11:59:18 [gemini] start
+11:59:18 [codex] start
+11:59:18 [gemini] spawned
+11:59:18 [codex] spawned
+11:59:23 [codex] chunk#1 **Password reset leaks tokens**
+11:59:23 [codex] heartbeat elapsed=5s chunks=1
+11:59:24 [codex] chunk#2 `request_password_reset` leaks the reset token in the API response, which lets anyone who knows a us
+11:59:24 [codex] terminate reason=max_lines
+11:59:24 [codex] done chunks=2 ttft_ms=5661
+11:59:42 [gemini] chunk#1 Weak password hashing (SHA-256) used; replace with a slow algorithm like bcrypt or Argon2 to prevent
+11:59:42 [gemini] heartbeat elapsed=23s chunks=1
+11:59:42 [gemini] done chunks=1 ttft_ms=23918
+11:59:59 [claude] chunk#1 ```python """ Quick-and-dirty auth module with login/register/reset functionality. NOT FOR PRODUCTIO
+11:59:59 [claude] heartbeat elapsed=17s chunks=1

@@ -1,0 +1,13 @@
+11:28:33 [runner] experiment=exp4 home_mode=system heartbeat=2.0s
+11:28:33 [claude] start
+11:28:33 [claude] spawned
+11:28:49 [claude] chunk#1  ```python """ Quick-and-dirty auth module with login/register/reset functionality. WARNING: This is
+11:28:49 [claude] heartbeat elapsed=16s chunks=1
+11:28:50 [claude] done chunks=1 ttft_ms=16110
+11:28:50 [gemini] start
+11:28:50 [gemini] spawned
+11:29:11 [gemini] chunk#1 Weak password hashing (unsalted SHA-256).
+11:29:11 [gemini] heartbeat elapsed=21s chunks=1
+11:29:11 [gemini] done chunks=1 ttft_ms=21603
+11:29:25 [claude] chunk#1 ```python """ Quick-and-dirty auth module with login/register/reset functionality. WARNING: This is 
+11:29:25 [claude] heartbeat elapsed=13s chunks=1

@@ -1,0 +1,61 @@
+{
+  "experiment": "exp6",
+  "home_mode": "system",
+  "timestamp": 1771757263,
+  "lead": {
+    "name": "claude",
+    "session_id": "c93537b6-8aa6-4a77-9bd0-046d3b4e662d",
+    "ttft_ms": 16900,
+    "chunk_count": 1,
+    "errors": [],
+    "output": [
+      "\n```python\n\"\"\"\nQuick-and-dirty auth module with login/register/reset functionality.\nWARNING: This is intentionally simplified and NOT production-ready.\n\"\"\"\n\nimport hashlib\nimport secrets\nimport json\nfrom pathlib import Path\nfrom datetime import datetime, timedelta\n\n# Simple file-based storage (quick and dirty)\nUSERS_FILE = Path(\"users.json\")\nRESET_TOKENS_FILE = Path(\"reset_tokens.json\")\n\n\ndef _load_users():\n    if USERS_FILE.exists():\n        return json.loads(USERS_FILE.read_text())\n    return {}\n\n\ndef _save_users(users):\n    USERS_FILE.write_text(json.dumps(users, indent=2))\n\n\ndef _load_reset_tokens():\n    if RESET_TOKENS_FILE.exists():\n        return json.loads(RESET_TOKENS_FILE.read_text())\n    return {}\n\n\ndef _save_reset_tokens(tokens):\n    RESET_TOKENS_FILE.write_text(json.dumps(tokens, indent=2))\n\n\ndef _hash_password(password, salt=None):\n    if salt is None:\n        salt = secrets.token_hex(16)\n    hashed = hashlib.sha256((salt + password).encode()).hexdigest()\n    return salt, hashed\n\n\ndef register(username, password, email=None):\n    \"\"\"Register a new user.\"\"\"\n    users = _load_users()\n    \n    if username in users:\n        return {\"success\": False, \"error\": \"Username already exists\"}\n    \n    salt, hashed = _hash_password(password)\n    users[username] = {\n        \"password_hash\": hashed,\n        \"salt\": salt,\n        \"email\": email,\n        \"created_at\": datetime.now().isoformat()\n    }\n    _save_users(users)\n    \n    return {\"success\": True, \"message\": f\"User {username} registered successfully\"}\n\n\ndef login(username, password):\n    \"\"\"Login a user.\"\"\"\n    users = _load_users()\n    \n    if username not in users:\n        return {\"success\": False, \"error\": \"Invalid username or password\"}\n    \n    user = users[username]\n    _, hashed = _hash_password(password, user[\"salt\"])\n    \n    if hashed != user[\"password_hash\"]:\n        return {\"success\": False, \"error\": \"Invalid username or password\"}\n    \n    # Generate a simple session token\n    session_token = secrets.token_urlsafe(32)\n    \n    return {\n        \"success\": True,\n        \"message\": \"Login successful\",\n        \"session_token\": session_token,\n        \"username\": username\n    }\n\n\ndef request_password_reset(username):\n    \"\"\"Request a password reset token.\"\"\"\n    users = _load_users()\n    \n    if username not in users:\n        # Don't reveal if user exists or not\n        return {\"success\": True, \"message\": \"If the user exists, a reset token has been generated\"}\n    \n    reset_token = secrets.token_urlsafe(32)\n    tokens = _load_reset_tokens()\n    \n    tokens[reset_token] = {\n        \"username\": username,\n        \"expires_at\": (datetime.now() + timedelta(hours=1)).isoformat()\n    }\n    _save_reset_tokens(tokens)\n    \n    # In real app, you'd email this token\n    return {\n        \"success\": True,\n        \"message\": \"Reset token generated\",\n        \"reset_token\": reset_token  # Only for demo, don't return in production!\n    }\n\n\ndef reset_password(reset_token, new_password):\n    \"\"\"Reset password using a token.\"\"\"\n    tokens = _load_reset_tokens()\n    \n    if reset_token not in tokens:\n        return {\"success\": False, \"error\": \"Invalid or expired reset token\"}\n    \n    token_data = tokens[reset_token]\n    expires_at = datetime.fromisoformat(token_data[\"expires_at\"])\n    \n    if datetime.now() > expires_at:\n        del tokens[reset_token]\n        _save_reset_tokens(tokens)\n        return {\"success\": False, \"error\": \"Invalid or expired reset token\"}\n    \n    username = token_data[\"username\"]\n    users = _load_users()\n    \n    salt, hashed = _hash_password(new_password)\n    users[username][\"password_hash\"] = hashed\n    users[username][\"salt\"] = salt\n    _save_users(users)\n    \n    # Clean up used token\n    del tokens[reset_token]\n    _save_reset_tokens(tokens)\n    \n    return {\"success\": True, \"message\": \"Password reset successfully\"}\n\n\n# Quick test\nif __name__ == \"__main__\":\n    # Register\n    print(register(\"testuser\", \"password123\", \"test@example.com\"))\n    \n    # Login\n    print(login(\"testuser\", \"password123\"))\n    print(login(\"testuser\", \"wrongpassword\"))\n    \n    # Reset flow\n    result = request_password_reset(\"testuser\")\n    print(result)\n    if result.get(\"reset_token\"):\n        print(reset_password(result[\"reset_token\"], \"newpassword456\"))\n    \n    # Login with new password\n    print(login(\"testuser\", \"newpassword456\"))\n```"
+    ]
+  },
+  "eyes": {
+    "security": {
+      "run": {
+        "name": "gemini",
+        "session_id": null,
+        "ttft_ms": 25173,
+        "chunk_count": 1,
+        "errors": [],
+        "output": [
+          "Weak password hashing (SHA-256); use bcrypt or Argon2 to prevent brute-force attacks."
+        ]
+      },
+      "elapsed_ms": 25175
+    },
+    "architecture": {
+      "run": {
+        "name": "codex",
+        "session_id": "019c84f6-1a85-75a2-a458-bc00559388ec",
+        "ttft_ms": 2195,
+        "chunk_count": 2,
+        "errors": [],
+        "output": [
+          "**Highlighting weak password hashing**",
+          "Password storage is insecure: `_hash_password` uses a single fast SHA-256 (`salt + password`) instead of a slow password KDF (Argon2/bcrypt/scrypt/PBKDF2), making offline cracking practical if `users.json` is exposed."
+        ]
+      },
+      "elapsed_ms": 2901
+    }
+  },
+  "findings": {
+    "security": "Weak password hashing (SHA-256); use bcrypt or Argon2 to prevent brute-force attacks.",
+    "architecture": "**Highlighting weak password hashing**\nPassword storage is insecure: `_hash_password` uses a single fast SHA-256 (`salt + password`) instead of a slow password KDF (Argon2/bcrypt/scrypt/PBKDF2), making offline cracking practical if `users.json` is exposed."
+  },
+  "resume": {
+    "resumed": true,
+    "output": [
+      "```python\n\"\"\"\nQuick-and-dirty auth module with login/register/reset functionality.\nUses bcrypt for secure password hashing.\n\"\"\"\n\nimport bcrypt\nimport secrets\nimport json\nfrom pathlib import Path\nfrom datetime import datetime, timedelta\n\n# Simple file-based storage (quick and dirty)\nUSERS_FILE = Path(\"users.json\")\nRESET_TOKENS_FILE = Path(\"reset_tokens.json\")\n\n\ndef _load_users():\n    if USERS_FILE.exists():\n        return json.loads(USERS_FILE.read_text())\n    return {}\n\n\ndef _save_users(users):\n    USERS_FILE.write_text(json.dumps(users, indent=2))\n\n\ndef _load_reset_tokens():\n    if RESET_TOKENS_FILE.exists():\n        return json.loads(RESET_TOKENS_FILE.read_text())\n    return {}\n\n\ndef _save_reset_tokens(tokens):\n    RESET_TOKENS_FILE.write_text(json.dumps(tokens, indent=2))\n\n\ndef _hash_password(password):\n    \"\"\"Hash password using bcrypt with automatic salt generation.\"\"\"\n    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()\n\n\ndef _verify_password(password, hashed):\n    \"\"\"Verify password against bcrypt hash.\"\"\"\n    return bcrypt.checkpw(password.encode(), hashed.encode())\n\n\ndef register(username, password, email=None):\n    \"\"\"Register a new user.\"\"\"\n    users = _load_users()\n    \n    if username in users:\n        return {\"success\": False, \"error\": \"Username already exists\"}\n    \n    password_hash = _hash_password(password)\n    users[username] = {\n        \"password_hash\": password_hash,\n        \"email\": email,\n        \"created_at\": datetime.now().isoformat()\n    }\n    _save_users(users)\n    \n    return {\"success\": True, \"message\": f\"User {username} registered successfully\"}\n\n\ndef login(username, password):\n    \"\"\"Login a user.\"\"\"\n    users = _load_users()\n    \n    if username not in users:\n        return {\"success\": False, \"error\": \"Invalid username or password\"}\n    \n    user = users[username]\n    \n    if not _verify_password(password, user[\"password_hash\"]):\n        return {\"success\": False, \"error\": \"Invalid username or password\"}\n    \n    # Generate a simple session token\n    session_token = secrets.token_urlsafe(32)\n    \n    return {\n        \"success\": True,\n        \"message\": \"Login successful\",\n        \"session_token\": session_token,\n        \"username\": username\n    }\n\n\ndef request_password_reset(username):\n    \"\"\"Request a password reset token.\"\"\"\n    users = _load_users()\n    \n    if username not in users:\n        # Don't reveal if user exists or not\n        return {\"success\": True, \"message\": \"If the user exists, a reset token has been generated\"}\n    \n    reset_token = secrets.token_urlsafe(32)\n    tokens = _load_reset_tokens()\n    \n    tokens[reset_token] = {\n        \"username\": username,\n        \"expires_at\": (datetime.now() + timedelta(hours=1)).isoformat()\n    }\n    _save_reset_tokens(tokens)\n    \n    # In real app, you'd email this token\n    return {\n        \"success\": True,\n        \"message\": \"Reset token generated\",\n        \"reset_token\": reset_token  # Only for demo, don't return in production!\n    }\n\n\ndef reset_password(reset_token, new_password):\n    \"\"\"Reset password using a token.\"\"\"\n    tokens = _load_reset_tokens()\n    \n    if reset_token not in tokens:\n        return {\"success\": False, \"error\": \"Invalid or expired reset token\"}\n    \n    token_data = tokens[reset_token]\n    expires_at = datetime.fromisoformat(token_data[\"expires_at\"])\n    \n    if datetime.now() > expires_at:\n        del tokens[reset_token]\n        _save_reset_tokens(tokens)\n        return {\"success\": False, \"error\": \"Invalid or expired reset token\"}\n    \n    username = token_data[\"username\"]\n    users = _load_users()\n    \n    password_hash = _hash_password(new_password)\n    users[username][\"password_hash\"] = password_hash\n    _save_users(users)\n    \n    # Clean up used token\n    del tokens[reset_token]\n    _save_reset_tokens(tokens)\n    \n    return {\"success\": True, \"message\": \"Password reset successfully\"}\n\n\n# Quick test\nif __name__ == \"__main__\":\n    # Register\n    print(register(\"testuser\", \"password123\", \"test@example.com\"))\n    \n    # Login\n    print(login(\"testuser\", \"password123\"))\n    print(login(\"testuser\", \"wrongpassword\"))\n    \n    # Reset flow\n    result = request_password_reset(\"testuser\")\n    print(result)\n    if result.get(\"reset_token\"):\n        print(reset_password(result[\"reset_token\"], \"newpassword456\"))\n    \n    # Login with new password\n    print(login(\"testuser\", \"newpassword456\"))\n```"
+    ],
+    "ttft_ms": 12642
+  },
+  "quality_signals": {
+    "lead_has_code": true,
+    "security_has_finding": true,
+    "architecture_has_finding": true,
+    "resume_has_code": true
+  }
+}

@@ -1,0 +1,47 @@
+11:09:04 [runner] experiment=exp2 home_mode=system heartbeat=2.0s
+11:09:04 [claude] start
+11:09:04 [claude] spawned
+11:09:12 [claude] chunk#1 ```python # auth_system.py - Authentication System Pseudocode  def register(username, email, passwor
+11:09:12 [claude] heartbeat elapsed=7s chunks=1
+11:09:12 [claude] terminate reason=timeout
+11:09:12 [claude] done chunks=1 ttft_ms=7973
+11:09:12 [claude] resume start
+11:09:17 [claude] chunk#1 ```python def logout(session_token):     if not validate_session(session_token):         return Erro
+11:09:17 [claude] heartbeat elapsed=5s chunks=1
+11:09:18 [claude] resume done
+11:09:18 [claude] context-check start
+11:09:21 [claude] chunk#1 LION-CTX-CLAUDE-1771754944
+11:09:21 [claude] heartbeat elapsed=3s chunks=1
+11:09:22 [claude] context-check done preserved=True
+11:09:22 [gemini] start
+11:09:22 [gemini] spawned
+11:09:35 [gemini] chunk#1 ```python # auth_system.py (Pseudocode)  class User:     def __init__(self, username, password_hash,
+11:09:35 [gemini] heartbeat elapsed=12s chunks=1
+11:09:35 [gemini] terminate reason=timeout
+11:09:35 [gemini] done chunks=1 ttft_ms=12922
+11:09:35 [gemini] resume start
+11:09:47 [gemini] chunk#1 ```python     def verify_email(self, username, verification_code):         user = self.user_database
+11:09:47 [gemini] heartbeat elapsed=11s chunks=1
+11:09:47 [gemini] resume done
+11:09:47 [gemini] context-check start
+11:09:54 [gemini] chunk#1 LION-CTX-GEMINI-1771754962
+11:09:54 [gemini] heartbeat elapsed=7s chunks=1
+11:09:54 [gemini] context-check done preserved=True
+11:09:54 [codex] start
+11:09:54 [codex] spawned
+11:10:04 [codex] chunk#1 **Providing exact 30-line pseudocode**
+11:10:04 [codex] heartbeat elapsed=9s chunks=1
+11:10:04 [codex] terminate reason=timeout
+11:10:04 [codex] done chunks=1 ttft_ms=9481
+11:10:04 [codex] resume start
+11:10:09 [codex] chunk#1 **Providing code-only pseudocode continuation**
+11:10:09 [codex] heartbeat elapsed=5s chunks=1
+11:10:12 [codex] chunk#2 def request_password_reset(email):     user = db.find_user_by_email(email)     if not user: return e
+11:10:12 [codex] heartbeat elapsed=8s chunks=2
+11:10:12 [codex] resume done
+11:10:12 [codex] context-check start
+11:10:15 [codex] chunk#1 LION-CTX-CODEX-1771754994
+11:10:15 [codex] heartbeat elapsed=2s chunks=1
+11:10:15 [codex] chunk#2 LION-CTX-CODEX-1771754994
+11:10:15 [codex] terminate reason=max_lines
+11:10:15 [codex] context-check done preserved=True

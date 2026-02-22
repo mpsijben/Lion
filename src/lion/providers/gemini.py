@@ -38,6 +38,7 @@ class GeminiProvider(Provider):
         if model:
             self.name = f"gemini.{model}"
         self._session_id = None
+        self._has_session = False
 
     def _safe_env(self):
         """Create env that prevents recursive lion calls from child processes
@@ -56,9 +57,10 @@ class GeminiProvider(Provider):
         cmd = ["gemini", "-o", "json"]
         if self.model_override:
             cmd.extend(["-m", self.model_override])
-        if resume and self._session_id:
-            cmd.extend(["--session-id", self._session_id])
-        cmd.append(prompt)
+        if resume and (self._has_session or self._session_id):
+            # Gemini CLI uses --resume (latest/index) for session continuation.
+            cmd.extend(["--resume", "latest"])
+        cmd.extend(["-p", prompt])
 
         env = self._safe_env()
 
@@ -86,6 +88,8 @@ class GeminiProvider(Provider):
         parsed = self._parse_output(result.stdout, duration)
         if parsed.session_id:
             self._session_id = parsed.session_id
+        if parsed.success:
+            self._has_session = True
         return parsed
 
     def ask_with_files(self, prompt, files, system_prompt="", cwd="."):
@@ -120,9 +124,9 @@ class GeminiProvider(Provider):
         cmd = ["gemini", "-o", "json", "--yolo"]
         if self.model_override:
             cmd.extend(["-m", self.model_override])
-        if self._session_id:
-            cmd.extend(["--session-id", self._session_id])
-        cmd.append(impl_prompt)
+        if self._has_session or self._session_id:
+            cmd.extend(["--resume", "latest"])
+        cmd.extend(["-p", impl_prompt])
 
         env = self._safe_env()
 
@@ -150,6 +154,8 @@ class GeminiProvider(Provider):
         parsed = self._parse_output(result.stdout, duration)
         if parsed.session_id:
             self._session_id = parsed.session_id
+        if parsed.success:
+            self._has_session = True
         return parsed
 
     def _parse_output(self, stdout, duration):
