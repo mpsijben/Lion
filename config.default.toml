@@ -40,6 +40,11 @@ archaeology_max_age_days = 90         # Ignore runs older than this
 auto_distill = true
 distill_provider = "gemini"           # Use cheap provider for compression
 
+# Pair programming configuration (for pair() function)
+[pair]
+check_every_n_lines = 20    # Check eyes every N lines of lead output
+max_interrupts = 10         # Max interrupt/resume cycles before finishing
+
 # Self-healing configuration (for ^ operator)
 [self_healing]
 max_rounds = 2                        # Max fix attempts per validation step

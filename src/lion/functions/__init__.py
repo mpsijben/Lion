@@ -17,6 +17,7 @@ from .onboard import execute_onboard
 from .audit import execute_audit
 from .cost import execute_cost
 from .migrate import execute_migrate
+from .pair import execute_pair
 
 FUNCTIONS = {
     "pride": execute_pride,
@@ -37,4 +38,5 @@ FUNCTIONS = {
     "audit": execute_audit,
     "cost": execute_cost,
     "migrate": execute_migrate,
+    "pair": execute_pair,
 }

@@ -23,6 +23,66 @@ pride(3) → impl() → review(^) → devil(^)
 
 The temptation is to solve this by adding management layers — a "tech lead" agent that reviews plans, a "project manager" agent that coordinates, a "QA" agent that validates. But AI agents don't have egos, don't need meetings to align, and can process vast amounts of context instantly. **Management is wasted tokens. Pure, real-time engineering collaboration is the solution.**
 
+## What Lion Actually Is
+
+Lion is not a "multi-agent framework". There are plenty of those.
+
+**Lion is a streaming-aware, interrupt-driven, process-level LLM scheduler.**
+
+The distinction matters. Most agent frameworks operate at the *prompt orchestration layer* — they compose messages, chain API calls, and pass results between agents. They treat LLMs as functions: input → output → next function.
+
+Lion operates at the *process orchestration layer*. It treats LLMs as **OS processes that can be scheduled, interrupted, killed, and resumed**. This is a systems-engineering perspective, not a prompt-engineering one.
+
+The core mechanism: `subprocess.Popen` → stream interception → `terminate()` → `--resume`. That's process control, not prompt chaining.
+
+**What this enables that prompt orchestration cannot:**
+
+LLM generation is inherently **open loop** — the model generates tokens sequentially with no external feedback until it finishes. Every framework that reviews output after generation accepts this. They add a review step, get feedback, regenerate. That's still open loop with a retry.
+
+Lion turns LLM generation into a **closed loop control system**. The output stream is continuously monitored by observer processes (eyes). When the output deviates from acceptable parameters (security flaw, architectural mistake), a control signal fires (interrupt), the process adjusts (correction via resume), and generation continues on the corrected trajectory. Real-time feedback, not post-hoc retry.
+
+```
+Open loop (every other framework):
+  prompt → [generate 200 lines] → review → "line 10 was wrong" → regenerate
+
+Closed loop (Lion):
+  prompt → [generate line 10] → eye detects deviation → interrupt → correct → [continue from line 11]
+```
+
+The difference: in open loop, the model builds 190 lines on a broken foundation before anyone notices. In closed loop, the error is caught at line 10 and corrected at line 12.
+
+### Honest Positioning
+
+**Is this idea conceptually unique?** No. Real-time feedback loops, multi-agent review, and stream interruption exist as concepts. Google's ADK blog describes "interruptibility" in streaming agents. AgentAsk (2025) formalizes edge-level intervention to prevent cascading errors.
+
+**Is this implementation unique?** Yes. Nobody has productized this at the process level — using CLI terminate + resume with session persistence, cross-model eyes on flat-rate subscriptions, and dynamic leader election (mutiny) where the observer becomes the writer. The existing multi-CLI tools (Claude Code Bridge, Claude Octopus, Claude-Code-Workflow) all operate turn-based or in parallel-but-independent modes. None do mid-generation stream interception with interrupt.
+
+**The defensible claim is not "nobody thought of this" — it's "nobody built this at the process level and shipped it."**
+
+### When Lion Adds Value (and When It Doesn't)
+
+**Lion's `pair()` is valuable when:**
+- Tasks generate > ~300 lines (enough surface for cascading errors)
+- Errors have high impact (security, infrastructure, payment logic)
+- You're on flat-rate CLI subscriptions (interrupts cost €0)
+- You can measure quality improvement vs baseline
+
+**Lion's `pair()` is probably overkill for:**
+- Small functions (< 50 lines)
+- Snippets and prototyping
+- Tasks where speed matters more than correctness
+- Quick-and-dirty exploration
+
+### Known Risks
+
+Three risks that the POC must address with data:
+
+**1. Interrupt cost > cascade cost.** If the eyes generate too many false positives, every interrupt adds latency (terminate → resume → restart) without improving quality. The net effect is slower output with the same number of bugs. The POC must measure false positive rate and compare total time with vs without eyes.
+
+**2. Resume drift.** `--resume` preserves the session, but models may subtly lose coherence after multiple interrupt/resume cycles. After 5+ interrupts, the model might start repeating itself, contradicting earlier code, or losing track of the overall architecture. The POC must test stability across 1, 3, 5, and 10+ interrupts in a single session.
+
+**3. Latency stacking.** Streaming + eye check + terminate + resume can accumulate latency that exceeds the cost of just letting the model finish and doing a post-hoc review + regeneration. For short tasks, the overhead of the control loop may exceed the cost of the cascade. The POC must measure wall-clock time for pair() vs solo + review and find the break-even task size.
+
 ## The Insight: Real Mob Programming
 
 Watch a mob programming session. Five developers, one screen. The driver types, the navigators watch in real-time. Someone says "wait, that's not safe" *as the code is being written*. The driver adjusts immediately. No wasted work. No separate review phase. No 60 seconds of building on a mistake.
@@ -120,7 +180,7 @@ lion '"Build auth" -> fuse(claude, gemini, claude) -> impl()'
 
 ## The Killer Combo: `fuse() → pair()`
 
-For complex tasks, deliberate first with fuse, then build with pair:
+For tasks that genuinely need architectural deliberation before building:
 
 ```bash
 lion '"Build payment system" -> fuse(3) -> pair(claude.opus, eyes: sec+arch+perf)'
@@ -146,15 +206,28 @@ pair(claude.opus, eyes: sec+arch+perf):            [~60 sec]
                                            Total:  ~90 seconds
 ```
 
-Compare with the old sequential model:
+But for most tasks, you don't need fuse() at all. pair() alone handles it:
 
 ```
-pride(3) → impl() → review(^) → devil(^):
-  propose [30s] → critique [25s] → converge [20s] → build [60s] → review [15s] → devil [15s]
-  Total: ~165 seconds, and review happens AFTER the code is written
-```
+"Build auth endpoint" → pair(claude, eyes: sec+arch):
 
-**~90 seconds vs ~165 seconds. Almost 2× faster. And higher quality because feedback is immediate — cascading hallucinations caught at the source.**
+  pair() alone:                                     [~44 sec]
+    lead starts building, eyes watch
+    architecture eye nudges toward bcrypt at line 5
+    security eye catches missing rate limiting at line 30
+    → correct code, no plan phase needed
+                                                    ═════════
+                                            Total:  ~44 seconds
+
+  vs traditional fuse() → pair():                   [~90 sec]
+    30 seconds of deliberation about something obvious
+    + 60 seconds of building
+    → same quality, 2× slower
+
+  vs old sequential model:                          [~165 sec]
+    plan [75s] → build [60s] → review [15s] → fix [15s]
+    → same quality, 4× slower
+```
 
 ## The Avengers Setup: Asymmetric Multi-LLM Synergy
 
@@ -276,7 +349,36 @@ This is Kubernetes for AI agents: LION is the orchestrator, worktrees are pods, 
 
 ## Why the Plan Phase Can Disappear
 
-Traditional wisdom: plan first, then build. But `pair()` challenges this. A good lead with sharp eyes doesn't need a separate plan — it *thinks while building*, and the eyes catch mistakes before they compound.
+Traditional agent workflows front-load a heavy planning phase: multiple agents deliberate, critique, converge on an architecture — *before a single line of code is written*. This takes 30-60 seconds and consumes 3+ CLI calls (which eat into your daily quota).
+
+Why do they do this? Because without a plan, the implementation agent might pick the wrong approach and waste 200 lines of code. The plan is a **preemptive insurance policy against cascade**.
+
+But with `pair()`, the eyes *are* the insurance. If the lead starts building the wrong architecture, the architecture eye catches it at line 10-20, not line 200. The cost of a wrong start is 10 lines + one interrupt (~2 seconds), not 200 lines + full review + full rewrite (~40+ seconds).
+
+This changes the economics fundamentally:
+
+```
+Traditional (with plan):
+  fuse(3) plan      [30-60s]  ← 3 CLI calls, insurance against bad architecture
+  implement         [40s]
+  review            [15s]
+  rewrite           [20s]
+                    ═════
+                    ~105-135s, 5+ CLI calls from your daily quota
+
+pair() without plan:
+  pair(claude, eyes: sec+arch)  [44s]  ← eyes catch bad architecture live
+                                ═════
+                                ~44s, 1 lead + parallel eye calls
+
+Savings: ~60-90 seconds AND 3+ fewer CLI calls against quota
+```
+
+The plan phase doesn't just cost time — it costs quota. On Claude Max, Gemini Code Assist, and Codex subscriptions, you have daily request limits. Three agents deliberating burns three requests *before you start building*. With pair(), the eyes run as lightweight checks against the streaming output — typically cheaper on quota than full deliberation sessions.
+
+**When you still need a plan:**
+
+The plan is not always unnecessary. For tasks where the wrong *fundamental* choice wastes everything (microservices vs monolith, SQL vs NoSQL, REST vs GraphQL), you need to deliberate before building. The eyes can't save you from choosing the wrong database — they can only catch issues within the chosen architecture.
 
 | Task | Pipeline | Why |
 |------|----------|-----|
@@ -286,41 +388,44 @@ Traditional wisdom: plan first, then build. But `pair()` challenges this. A good
 | "Build e-commerce platform" | `fuse(3) -> task(5) -> pair()` | Needs architecture + parallel execution |
 | "Migrate MongoDB to Postgres" | `fuse(3) -> pair(eyes: arch+perf)` | Needs strategy before touching code |
 
-The rule of thumb: **if the wrong architectural choice wastes the entire implementation, deliberate first. Otherwise, just build with eyes.**
+**The rule of thumb: if the wrong architectural choice wastes the entire implementation, deliberate first. Otherwise, just build with eyes.** For ~80% of tasks, `pair()` alone is enough. `fuse()` is for the ~20% where you genuinely need to think before building. `task()` is for when the work is too big for a single swarm.
 
-For ~80% of tasks, `pair()` is enough. `fuse()` is for the ~20% where you genuinely need to think before building. `task()` is for when the work is too big for a single swarm.
+This means the threshold for "do I need a plan?" shifts upward. Tasks that previously needed planning (medium complexity, 100-300 lines) can now go straight to `pair()` because the eyes provide continuous course correction. Only truly architectural decisions still need `fuse()`.
 
-## Four Speeds
+## Three Speeds (Not Four)
+
+With pair() absorbing most of the plan phase's job, the pipeline simplifies:
 
 ```bash
-# Solo: no overhead
+# Speed 1 — Solo: small, obvious tasks
 lion '"Fix the login bug"'
+# Just impl(). No overhead. <50 lines, pattern is clear.
 
-# Pair: live pair programming with eyes
-lion '"Build auth" -> pair(claude.opus, eyes: sec+arch)'
+# Speed 2 — Pair: most tasks (the new default)
+lion '"Build auth" -> pair(claude, eyes: sec+arch)'
+# Live pair programming. Eyes replace both plan AND review.
+# 50-300 lines. Covers ~80% of real work.
 
-# Fuse + Pair: deliberate, then pair program
-lion '"Build payment system" -> fuse(3) -> pair(claude.opus, eyes: sec+arch+perf)'
-
-# Multi-Swarm: decompose, deliberate, parallel pair programming in isolated worktrees
-lion '"Build SaaS platform" -> task(5) -> fuse(3) -> pair(claude.opus, eyes: sec+arch+perf)'
+# Speed 3 — Full pipeline: architectural decisions + large scope
+lion '"Build SaaS platform" -> fuse(3) -> task(5) -> pair(claude, eyes: sec+arch+perf)'
+# Deliberate → decompose → parallel pair in worktrees.
+# 300+ lines, fundamental architecture choices.
 ```
+
+The old four speeds (solo → pair → fuse+pair → multi-swarm) collapse because pair() makes fuse() optional for most tasks. The middle two speeds merge.
 
 Auto-selection via complexity config:
 
 ```toml
 [complexity]
-epic_signals = ["platform", "system", "application", "saas", "full-stack"]
-epic_pipeline = "task(5) -> fuse(3) -> pair(claude.opus, eyes: sec+arch+perf)"
+large_signals = ["platform", "system", "saas", "migrate", "redesign", "architect"]
+large_pipeline = "fuse(3) -> task(5) -> pair(claude, eyes: sec+arch+perf)"
 
-high_signals = ["architect", "migrate", "redesign", "integrate payment"]
-high_pipeline = "fuse(3) -> pair(claude.opus, eyes: sec+arch)"
+medium_signals = ["build", "create", "add", "implement", "integrate"]
+medium_pipeline = "pair(claude, eyes: sec+arch)"
 
-medium_signals = ["build", "create", "add", "implement"]
-medium_pipeline = "pair(claude.opus, eyes: sec+arch)"
-
-low_signals = ["fix", "bug", "typo", "rename", "change", "update"]
-low_pipeline = "impl()"
+small_signals = ["fix", "bug", "typo", "rename", "change", "update"]
+small_pipeline = "impl()"
 ```
 
 ## How It Works Under the Hood
@@ -671,12 +776,486 @@ No YAML configs. No agent class hierarchies. No graph definitions. Just a pipeli
 
 ### Phase 1: The Stream Interceptor (Core Engine)
 
-Build the `claude -p --output-format stream-json` wrapper that streams CLI output, captures session IDs, and supports terminate + `--resume`.
+Build a unified `StreamInterceptor` abstraction that wraps all three CLIs (Claude, Gemini, Codex), streams their output, and supports terminate + resume. This is the foundation — everything else builds on this.
 
-1. `StreamInterceptor` class: wraps `claude -p`, yields parsed stream-json chunks, captures `session_id`
-2. Terminate + resume cycle: `proc.terminate()` → `claude -p --resume {session_id}`
-3. Verify: context is preserved across terminate/resume cycles
-4. Measure: restart latency, quota consumption per interrupt
+1. Abstract `StreamInterceptor` base class with `start()`, `chunks()`, `terminate()`, `resume()`
+2. `ClaudeInterceptor`: wraps `claude -p --output-format stream-json`, captures `session_id`, resumes via `--resume`
+3. `GeminiInterceptor`: wraps `gemini` CLI, parses stdout stream, handles session persistence
+4. `CodexInterceptor`: wraps `codex exec --json`, parses JSONL events, resumes via `codex exec resume`
+5. `EyeRunner`: takes any interceptor + lens prompt, evaluates chunks, returns findings
+6. Basic `pair()`: 1 lead interceptor + n eye interceptors running in parallel
+7. Tests: verify interrupt/resume per CLI, verify cross-CLI eye checks work
+
+**Reference implementation: `pair_poc/`**
+
+The POC directory contains a working proof of concept of the full pair() loop. This is the code structure to port into Lion:
+
+```
+pair_poc/
+├── interceptors/
+│   ├── base.py           # Abstract StreamInterceptor
+│   ├── claude.py          # ClaudeInterceptor
+│   ├── gemini.py          # GeminiInterceptor
+│   └── codex.py           # CodexInterceptor
+├── eyes/
+│   ├── eye.py             # Eye: interceptor + lens + check logic
+│   └── lenses.py          # Lens prompts: sec, arch, perf, test
+├── pair.py                # The pair() loop: lead + eyes + interrupt
+├── benchmark.py           # Experiment 7: pair() vs solo+review
+└── config.py              # CLI paths, models, chunk sizes
+```
+
+**`interceptors/base.py`** — The abstract interface:
+
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Iterator
+import subprocess
+import time
+
+
+@dataclass
+class Chunk:
+    text: str
+    timestamp: float
+    accumulated: str  # all text so far
+
+
+class StreamInterceptor(ABC):
+    """Base class for CLI stream interception.
+    
+    Treats LLM CLIs as OS processes: start, stream, terminate, resume.
+    This is process-level orchestration, not prompt orchestration.
+    """
+    
+    def __init__(self):
+        self.proc: subprocess.Popen | None = None
+        self.session_id: str | None = None
+        self.accumulated: str = ""
+        self.chunk_count: int = 0
+        self.start_time: float = 0
+        self.ttft: float | None = None  # time to first token
+    
+    @abstractmethod
+    def _build_cmd(self, prompt: str, resume: bool = False) -> list[str]:
+        """Build the CLI command for this provider."""
+        ...
+    
+    @abstractmethod
+    def _parse_line(self, line: str) -> str | None:
+        """Parse a line of output into text content. Returns None if not content."""
+        ...
+    
+    @abstractmethod
+    def _extract_session_id(self, line: str) -> str | None:
+        """Extract session ID from output line if present."""
+        ...
+    
+    def start(self, prompt: str) -> None:
+        cmd = self._build_cmd(prompt, resume=bool(self.session_id))
+        self.proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1
+        )
+        self.start_time = time.time()
+    
+    def chunks(self) -> Iterator[Chunk]:
+        if not self.proc or not self.proc.stdout:
+            return
+        
+        for line in self.proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Try to extract session ID
+            sid = self._extract_session_id(line)
+            if sid:
+                self.session_id = sid
+            
+            # Parse content
+            text = self._parse_line(line)
+            if text:
+                self.accumulated += text
+                self.chunk_count += 1
+                if self.ttft is None:
+                    self.ttft = time.time() - self.start_time
+                yield Chunk(
+                    text=text,
+                    timestamp=time.time() - self.start_time,
+                    accumulated=self.accumulated
+                )
+    
+    def terminate(self) -> None:
+        if self.proc:
+            self.proc.terminate()
+            self.proc.wait()
+            self.proc = None
+    
+    def resume(self, correction: str) -> None:
+        """Terminate current process and restart with correction."""
+        self.terminate()
+        prompt = f"{correction}\n\nContinue from where you left off."
+        self.start(prompt)
+```
+
+**`interceptors/claude.py`** — Claude CLI implementation:
+
+```python
+import json
+from .base import StreamInterceptor
+
+
+class ClaudeInterceptor(StreamInterceptor):
+    name = "claude"
+    
+    def _build_cmd(self, prompt: str, resume: bool = False) -> list[str]:
+        cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
+        if resume and self.session_id:
+            cmd.extend(["--resume", self.session_id])
+        return cmd
+    
+    def _parse_line(self, line: str) -> str | None:
+        try:
+            msg = json.loads(line)
+            if msg.get("type") == "assistant":
+                # Extract text from content blocks
+                for block in msg.get("content", []):
+                    if isinstance(block, dict) and "text" in block:
+                        return block["text"]
+                    elif isinstance(block, str):
+                        return block
+        except json.JSONDecodeError:
+            pass
+        return None
+    
+    def _extract_session_id(self, line: str) -> str | None:
+        try:
+            msg = json.loads(line)
+            return msg.get("session_id")
+        except json.JSONDecodeError:
+            return None
+```
+
+**`interceptors/gemini.py`** — Gemini CLI implementation:
+
+```python
+from .base import StreamInterceptor
+
+
+class GeminiInterceptor(StreamInterceptor):
+    name = "gemini"
+    
+    def _build_cmd(self, prompt: str, resume: bool = False) -> list[str]:
+        # Gemini CLI non-interactive mode
+        # NOTE: exact flags depend on your gemini CLI version
+        # Document the actual command from POC experiment 0
+        return ["gemini", "-p", prompt]
+    
+    def _parse_line(self, line: str) -> str | None:
+        # Gemini CLI outputs plain text or JSON depending on mode
+        # Adapt based on experiment 0 findings
+        if line.strip():
+            return line
+        return None
+    
+    def _extract_session_id(self, line: str) -> str | None:
+        # Gemini session handling — document from experiment 0
+        return None
+```
+
+**`interceptors/codex.py`** — Codex CLI implementation:
+
+```python
+import json
+from .base import StreamInterceptor
+
+
+class CodexInterceptor(StreamInterceptor):
+    name = "codex"
+    
+    def _build_cmd(self, prompt: str, resume: bool = False) -> list[str]:
+        if resume and self.session_id:
+            return ["codex", "exec", "resume", self.session_id, prompt]
+        return ["codex", "exec", "--json", prompt]
+    
+    def _parse_line(self, line: str) -> str | None:
+        try:
+            event = json.loads(line)
+            # Codex JSONL events have different types
+            if event.get("type") == "item.message":
+                return event.get("content", "")
+            elif event.get("type") == "turn.completed":
+                # Extract final message
+                return event.get("message", "")
+        except json.JSONDecodeError:
+            pass
+        return None
+    
+    def _extract_session_id(self, line: str) -> str | None:
+        try:
+            event = json.loads(line)
+            if event.get("type") == "thread.started":
+                return event.get("thread_id")
+        except json.JSONDecodeError:
+            return None
+```
+
+**`eyes/lenses.py`** — Lens prompt templates:
+
+```python
+LENSES = {
+    "sec": {
+        "name": "Security",
+        "prompt": (
+            "[SECURITY REVIEW] Check this code for security issues only. "
+            "Look for: SQL injection, XSS, plaintext passwords, missing auth, "
+            "hardcoded secrets, missing input validation, insecure crypto. "
+            "Reply NONE if clean. Otherwise describe the issue in one sentence."
+        ),
+    },
+    "arch": {
+        "name": "Architecture",
+        "prompt": (
+            "[ARCHITECTURE REVIEW] Check this code for architecture issues only. "
+            "Look for: tight coupling, missing abstractions, SOLID violations, "
+            "god classes, missing error handling, wrong patterns. "
+            "Reply NONE if clean. Otherwise describe the issue in one sentence."
+        ),
+    },
+    "perf": {
+        "name": "Performance",
+        "prompt": (
+            "[PERFORMANCE REVIEW] Check this code for performance issues only. "
+            "Look for: N+1 queries, missing indexes, memory leaks, blocking I/O, "
+            "unnecessary allocations, missing connection pooling. "
+            "Reply NONE if clean. Otherwise describe the issue in one sentence."
+        ),
+    },
+}
+```
+
+**`eyes/eye.py`** — Eye runner:
+
+```python
+from dataclasses import dataclass
+from interceptors.base import StreamInterceptor
+import threading
+
+
+@dataclass
+class Finding:
+    lens: str
+    description: str
+    eye_name: str
+    latency: float  # seconds to get response
+
+
+class Eye:
+    """An eye watches code and reports findings.
+    
+    Each eye wraps a StreamInterceptor (any CLI) with a lens (review focus).
+    Eyes run checks asynchronously — they don't block the lead.
+    """
+    
+    def __init__(self, interceptor: StreamInterceptor, lens: str, lens_prompt: str):
+        self.interceptor = interceptor
+        self.lens = lens
+        self.lens_prompt = lens_prompt
+        self.name = f"{interceptor.name}:{lens}"
+    
+    def check(self, code: str) -> Finding | None:
+        """Send code to the eye's CLI for review. Returns Finding or None."""
+        import time
+        start = time.time()
+        
+        prompt = f"{self.lens_prompt}\n\nCode:\n```\n{code}\n```"
+        
+        self.interceptor.start(prompt)
+        response = ""
+        for chunk in self.interceptor.chunks():
+            response += chunk.text
+        
+        latency = time.time() - start
+        
+        if "NONE" in response.upper():
+            return None
+        
+        return Finding(
+            lens=self.lens,
+            description=response.strip(),
+            eye_name=self.name,
+            latency=latency
+        )
+```
+
+**`pair.py`** — The complete pair() loop:
+
+```python
+"""
+pair() — The core Lion primitive.
+
+A streaming-aware, interrupt-driven, process-level pair programming loop.
+
+Lead (any CLI) generates code.
+Eyes (any CLI × any lens) monitor the stream in parallel.
+On finding: terminate lead → inject correction → resume.
+
+This is closed-loop control applied to LLM generation.
+"""
+
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from interceptors.base import StreamInterceptor, Chunk
+from eyes.eye import Eye, Finding
+
+
+def pair(
+    task: str,
+    lead: StreamInterceptor,
+    eyes: list[Eye],
+    check_every_n_lines: int = 20,
+    max_interrupts: int = 10,
+    verbose: bool = True
+) -> dict:
+    """
+    Execute the pair() loop.
+    
+    Returns:
+        dict with: output, interrupts, wall_clock, findings
+    """
+    
+    lead_output = ""
+    findings_log: list[Finding] = []
+    interrupt_count = 0
+    lines_since_check = 0
+    start_time = time.time()
+    
+    lead.start(task)
+    
+    complete = False
+    while not complete and interrupt_count < max_interrupts:
+        
+        for chunk in lead.chunks():
+            lead_output += chunk.text
+            lines_since_check += chunk.text.count("\n")
+            
+            if verbose:
+                print(f"[LEAD:{lead.name}] {chunk.text}", end="", flush=True)
+            
+            # Time to check?
+            if lines_since_check >= check_every_n_lines:
+                lines_since_check = 0
+                
+                # Run all eyes in parallel
+                all_findings = _check_eyes_parallel(eyes, lead_output)
+                
+                if all_findings:
+                    # INTERRUPT!
+                    lead.terminate()
+                    interrupt_count += 1
+                    findings_log.extend(all_findings)
+                    
+                    if verbose:
+                        for f in all_findings:
+                            print(f"\n[EYE:{f.eye_name}] ⚠️  {f.description} ({f.latency:.1f}s)")
+                    
+                    # Build correction prompt
+                    correction = _build_correction(all_findings)
+                    
+                    if verbose:
+                        print(f"\n>>> INTERRUPT #{interrupt_count}: resuming with correction...")
+                    
+                    # Resume with correction
+                    lead.resume(correction)
+                    break  # restart the chunks() loop from resume
+                else:
+                    if verbose:
+                        print(f"\n[EYES] ✅ clean ({len(eyes)} eyes checked)")
+        else:
+            # Lead finished without interrupt
+            complete = True
+    
+    wall_clock = time.time() - start_time
+    
+    return {
+        "output": lead_output,
+        "interrupts": interrupt_count,
+        "findings": findings_log,
+        "wall_clock": wall_clock,
+        "lines": lead_output.count("\n"),
+    }
+
+
+def _check_eyes_parallel(eyes: list[Eye], code: str) -> list[Finding]:
+    """Run all eyes in parallel. Return list of findings (empty if all clean)."""
+    findings = []
+    
+    with ThreadPoolExecutor(max_workers=len(eyes)) as pool:
+        futures = {pool.submit(eye.check, code): eye for eye in eyes}
+        
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                findings.append(result)
+    
+    return findings
+
+
+def _build_correction(findings: list[Finding]) -> str:
+    """Build a correction prompt from findings."""
+    lines = ["Code reviewers found the following issues:\n"]
+    for f in findings:
+        lines.append(f"[{f.lens.upper()}]: {f.description}")
+    lines.append("\nFix these issues in the code you've written and continue implementing.")
+    return "\n".join(lines)
+
+
+# ─── Example usage ───────────────────────────────────────────────
+
+if __name__ == "__main__":
+    from interceptors.claude import ClaudeInterceptor
+    from interceptors.gemini import GeminiInterceptor
+    from interceptors.codex import CodexInterceptor
+    from eyes.lenses import LENSES
+    
+    # The Avengers setup:
+    # Claude builds (Max subscription)
+    # Gemini watches security (Code Assist subscription)
+    # Codex watches architecture (ChatGPT subscription)
+    
+    lead = ClaudeInterceptor()
+    
+    eyes = [
+        Eye(GeminiInterceptor(), "sec", LENSES["sec"]["prompt"]),
+        Eye(CodexInterceptor(), "arch", LENSES["arch"]["prompt"]),
+    ]
+    
+    result = pair(
+        task=(
+            "Write a complete Python auth system with: "
+            "1) User registration with email validation "
+            "2) Login with JWT tokens "
+            "3) Password reset via email "
+            "4) Rate limiting on all endpoints "
+            "Include proper error handling and input validation."
+        ),
+        lead=lead,
+        eyes=eyes,
+        check_every_n_lines=20,
+        verbose=True
+    )
+    
+    print("\n" + "=" * 60)
+    print(f"Done in {result['wall_clock']:.1f}s")
+    print(f"Lines: {result['lines']}")
+    print(f"Interrupts: {result['interrupts']}")
+    print(f"Findings: {len(result['findings'])}")
+    for f in result['findings']:
+        print(f"  [{f.eye_name}] {f.description}")
+```
 
 ### Phase 2: The `pair()` Primitive
 

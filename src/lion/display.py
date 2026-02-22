@@ -249,6 +249,35 @@ class Display:
 
         _print("")
 
+    # ── pair() display methods ──────────────────────────────────────
+
+    @staticmethod
+    def pair_start(lead_name, eye_labels):
+        _print(f"\n   {BLUE}> pair({lead_name}, eyes: {'+'.join(eye_labels)}){RESET}")
+
+    @staticmethod
+    def pair_lead_chunk(lead_name, text_preview):
+        preview = text_preview.replace("\n", " ")[:120]
+        _print(f"   {DIM}[LEAD:{lead_name}] {preview}{RESET}")
+
+    @staticmethod
+    def pair_finding(eye_name, lens, description, latency):
+        _print(f"   {YELLOW}[EYE:{eye_name}] [{lens}] {description} ({latency:.1f}s){RESET}")
+
+    @staticmethod
+    def pair_interrupt(count, total_findings):
+        _print(f"   {RED}>>> INTERRUPT #{count}: {total_findings} finding(s), resuming with correction...{RESET}")
+
+    @staticmethod
+    def pair_clean(num_eyes):
+        _print(f"   {GREEN}v{RESET} eyes clean ({num_eyes} checked)")
+
+    @staticmethod
+    def pair_complete(interrupts, wall_clock, lines):
+        _print(f"   {GREEN}v{RESET} pair complete: {interrupts} interrupt(s), {lines} lines, {wall_clock:.1f}s")
+
+    # ── end pair() display ────────────────────────────────────────
+
     @staticmethod
     def cancelled():
         _print(f"\n{LION} Cancelled by user.")
