@@ -15,6 +15,7 @@ from .rich_renderer import RICH_AVAILABLE, get_panel_renderer
 from ..display import GREEN, YELLOW, RED, BLUE, CYAN, DIM, BOLD, RESET, MAGENTA
 from ..memory import SharedMemory
 from ..lenses import list_lenses, get_lens
+from ..session import SessionManager
 
 
 def cmd_help(session: SessionState, args: list[str]) -> None:
@@ -45,6 +46,13 @@ def cmd_help(session: SessionState, args: list[str]) -> None:
         print(f"\n{BOLD}History & Replay:{RESET}")
         print(f"  {CYAN}:history{RESET} [n]              - Show recent runs")
         print(f"  {CYAN}:replay{RESET} <run-id>          - Load a previous run")
+
+        print(f"\n{BOLD}Session History (with Git commits):{RESET}")
+        print(f"  {CYAN}:sessions{RESET} [n]             - Show pipeline sessions with commits")
+        print(f"  {CYAN}:session-detail{RESET} <id>      - Show session step-by-step commits")
+        print(f"  {CYAN}:session-resume{RESET} <id> --from <step>  - Resume from a step")
+        print(f"  {CYAN}:session-replay{RESET} <id>      - Read-only replay of session")
+        print(f"  {CYAN}:session-prune{RESET} [--keep n] - Clean up old sessions")
 
         print(f"\n{BOLD}Configuration:{RESET}")
         print(f"  {CYAN}:config{RESET} [key]             - Show configuration")
@@ -850,6 +858,589 @@ def cmd_interactive(session: SessionState, args: list[str]) -> None:
         print(f"Usage: :interactive on|off")
 
 
+# =============================================================================
+# Session History Commands (lion history, lion resume, lion replay)
+# =============================================================================
+
+
+def _validate_positive_int(value: str, name: str, max_value: int = 1000) -> int | None:
+    """Validate and parse a positive integer from CLI input.
+
+    Args:
+        value: String value to parse
+        name: Parameter name for error messages
+        max_value: Maximum allowed value
+
+    Returns:
+        Parsed integer or None if invalid (error already printed)
+    """
+    try:
+        num = int(value)
+    except ValueError:
+        print(f"{RED}Invalid {name}: '{value}' is not a number.{RESET}")
+        print(f"Please enter a positive integer (e.g., 1, 5, 10).")
+        return None
+
+    if num < 1:
+        print(f"{RED}Invalid {name}: must be at least 1, got {num}.{RESET}")
+        return None
+
+    if num > max_value:
+        print(f"{RED}Invalid {name}: {num} exceeds maximum of {max_value}.{RESET}")
+        return None
+
+    return num
+
+
+def cmd_session_history(session: SessionState, args: list[str]) -> None:
+    """Show pipeline session history with commit hashes.
+
+    This shows sessions from ~/.lion/sessions/ which track pipeline
+    execution with git commit hashes at each step.
+    """
+    # Parse and validate limit argument
+    limit = 10
+    if args:
+        validated = _validate_positive_int(args[0], "limit", max_value=500)
+        if validated is None:
+            return
+        limit = validated
+
+    manager = SessionManager()
+    sessions = manager.list_sessions(limit=limit)
+
+    if not sessions:
+        print(f"{YELLOW}No sessions found.{RESET}")
+        print(f"\nSessions are created when you run pipelines with session tracking enabled.")
+        return
+
+    print(f"\n{BOLD}Pipeline Session History{RESET}")
+    print(f"{DIM}{'=' * 70}{RESET}\n")
+
+    for i, sess_info in enumerate(sessions, 1):
+        # Format timestamp
+        started_at = sess_info.get("started_at", 0)
+        timestamp = datetime.fromtimestamp(started_at).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Status indicator
+        status = sess_info.get("status", "unknown")
+        status_colors = {
+            "completed": GREEN,
+            "failed": RED,
+            "running": YELLOW,
+            "interrupted": MAGENTA,
+        }
+        status_color = status_colors.get(status, DIM)
+        status_str = f"{status_color}{status}{RESET}"
+
+        # Step count
+        step_count = sess_info.get("step_count", 0)
+
+        # Stable short ID for reference (better than position-based numbering)
+        short_id = sess_info.get("short_id", "")
+
+        # Base commit (short hash)
+        base_commit = sess_info.get("base_commit", "")
+        commit_short = base_commit[:8] if base_commit else "n/a"
+
+        # Prompt (truncated)
+        prompt = sess_info.get("prompt", "")[:50]
+        if len(sess_info.get("prompt", "")) > 50:
+            prompt += "..."
+
+        # Pipeline
+        pipeline = sess_info.get("pipeline", "")[:40]
+
+        # Show both recency number and stable short_id for reference
+        print(f"  {CYAN}#{i}{RESET} ({YELLOW}{short_id}{RESET}) {DIM}{timestamp}{RESET}  [{status_str}]")
+        print(f"     {BOLD}{prompt}{RESET}")
+        print(f"     {DIM}pipeline:{RESET} {pipeline}")
+        print(f"     {DIM}steps:{RESET} {step_count}  {DIM}base:{RESET} {commit_short}")
+        print()
+
+    print(f"{DIM}Reference sessions by number (#1) or stable ID ({YELLOW}abc12345{RESET}).{RESET}")
+    print(f"{DIM}Use :session-detail <id> to see step-by-step commits.{RESET}")
+    print(f"{DIM}Use :session-resume <id> --from <step> to resume from a step.{RESET}")
+    print(f"{DIM}Use :session-prune to clean up old sessions.{RESET}")
+
+
+def _resolve_session_ref(manager: SessionManager, ref: str) -> tuple:
+    """Resolve a session reference to a Session object.
+
+    Supports:
+    - Recency numbers: "1", "2", "#3"
+    - Stable short IDs: "abc12345"
+
+    Args:
+        manager: SessionManager instance
+        ref: Session reference string
+
+    Returns:
+        Tuple of (Session or None, error_message or None)
+    """
+    # Strip leading # if present (allows "#1" syntax)
+    if ref.startswith("#"):
+        ref = ref[1:]
+
+    # Try as a number first
+    try:
+        num = int(ref)
+        if num >= 1:
+            sessions_count = len(manager.list_sessions(limit=num + 1))
+            if num > sessions_count:
+                return None, f"Session #{num} not found. Only {sessions_count} session(s) available."
+            sess = manager.get_session_by_number(num)
+            if sess:
+                return sess, None
+            return None, f"Session #{num} not found."
+    except ValueError:
+        pass
+
+    # Try as a short ID (8 hex chars)
+    if len(ref) == 8:
+        sess = manager.get_session_by_short_id(ref)
+        if sess:
+            return sess, None
+        return None, f"Session with ID '{ref}' not found."
+
+    # Try as a full session ID
+    sess = manager.load_session(ref)
+    if sess:
+        return sess, None
+
+    return None, f"Invalid session reference: '{ref}'. Use a number (#1) or short ID (abc12345)."
+
+
+def cmd_session_detail(session: SessionState, args: list[str]) -> None:
+    """Show detailed session info with step-by-step commit hashes."""
+    if not args:
+        print(f"{YELLOW}Usage: :session-detail <id>{RESET}")
+        print(f"Use session number (#1, #2) or stable ID (abc12345).")
+        print(f"Use {CYAN}:sessions{RESET} to see available sessions.")
+        return
+
+    manager = SessionManager()
+    sess, error = _resolve_session_ref(manager, args[0])
+
+    if error:
+        print(f"{RED}{error}{RESET}")
+        print(f"Use {CYAN}:sessions{RESET} to see available sessions.")
+        return
+
+    # Format timestamps
+    started_at = datetime.fromtimestamp(sess.started_at).strftime("%Y-%m-%d %H:%M:%S")
+    completed_at = (
+        datetime.fromtimestamp(sess.completed_at).strftime("%Y-%m-%d %H:%M:%S")
+        if sess.completed_at else "in progress"
+    )
+
+    # Status
+    status_colors = {
+        "completed": GREEN,
+        "failed": RED,
+        "running": YELLOW,
+        "interrupted": MAGENTA,
+    }
+    status_color = status_colors.get(sess.status, DIM)
+
+    print(f"\n{BOLD}Session {YELLOW}{sess.short_id}{RESET}{BOLD}: {sess.prompt[:60]}{RESET}")
+    print(f"{DIM}{'=' * 70}{RESET}\n")
+
+    print(f"  {DIM}ID:{RESET}        {sess.session_id}")
+    print(f"  {DIM}Status:{RESET}    {status_color}{sess.status}{RESET}")
+    print(f"  {DIM}Started:{RESET}   {started_at}")
+    print(f"  {DIM}Completed:{RESET} {completed_at}")
+    print(f"  {DIM}Pipeline:{RESET}  {sess.pipeline}")
+    print(f"  {DIM}CWD:{RESET}       {sess.cwd}")
+    print(f"  {DIM}Base:{RESET}      {sess.base_commit or 'n/a'}")
+    print(f"  {DIM}Tokens:{RESET}    {sess.total_tokens:,}")
+
+    if sess.error:
+        print(f"  {RED}Error:{RESET}     {sess.error}")
+
+    print(f"\n{BOLD}Steps:{RESET}\n")
+
+    for step in sess.steps:
+        # Step status indicator
+        step_status_colors = {
+            "completed": GREEN,
+            "failed": RED,
+            "running": YELLOW,
+            "pending": DIM,
+            "skipped": MAGENTA,
+        }
+        step_color = step_status_colors.get(step.status, DIM)
+
+        # Duration
+        duration_str = ""
+        if step.duration:
+            duration_str = f" ({step.duration:.1f}s)"
+
+        # Commit hash
+        commit_str = step.commit_hash[:8] if step.commit_hash else "no commit"
+
+        print(f"  {CYAN}Step {step.step_number}{RESET}: {step.function_name}")
+        print(f"    {DIM}status:{RESET} {step_color}{step.status}{RESET}{duration_str}")
+        print(f"    {DIM}commit:{RESET} {commit_str}")
+
+        if step.files_changed:
+            files_preview = ", ".join(step.files_changed[:3])
+            if len(step.files_changed) > 3:
+                files_preview += f", +{len(step.files_changed) - 3} more"
+            print(f"    {DIM}files:{RESET}  {files_preview}")
+
+        if step.tokens_used:
+            print(f"    {DIM}tokens:{RESET} {step.tokens_used:,}")
+
+        if step.error:
+            print(f"    {RED}error:{RESET}  {step.error[:60]}")
+
+        print()
+
+    print(f"{DIM}Use :session-resume {sess.short_id} --from <step> to resume from a specific step.{RESET}")
+
+
+def cmd_session_resume(session: SessionState, args: list[str]) -> None:
+    """Resume a session from a specific step.
+
+    Creates a worktree from the commit hash at that step, or resets
+    the current directory with --in-place.
+    """
+    if not args:
+        print(f"{YELLOW}Usage: :session-resume <id> --from <step> [--in-place]{RESET}")
+        print(f"\nResumes session from step <step>.")
+        print(f"Use session number (#1) or stable ID (abc12345).")
+        print(f"\nOptions:")
+        print(f"  --from <step>   Step number to resume from (0 = base commit)")
+        print(f"  --in-place      Reset current directory instead of creating worktree")
+        print(f"\nExamples:")
+        print(f"  {CYAN}:session-resume 1 --from 2{RESET}         Resume session #1 from step 2 (worktree)")
+        print(f"  {CYAN}:session-resume abc123 --from 0{RESET}    Resume by ID from base commit")
+        print(f"  {CYAN}:session-resume 1 --from 2 --in-place{RESET}  Reset current dir to step 2")
+        return
+
+    # Parse arguments
+    session_ref = None
+    from_step = None
+    from_step_str = None
+    in_place = False
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--from" and i + 1 < len(args):
+            from_step_str = args[i + 1]
+            i += 2
+        elif args[i] == "--in-place":
+            in_place = True
+            i += 1
+        elif args[i].startswith("--"):
+            print(f"{RED}Unknown option: {args[i]}{RESET}")
+            print(f"Valid options: --from <step>, --in-place")
+            return
+        else:
+            if session_ref is None:
+                session_ref = args[i]
+            i += 1
+
+    if session_ref is None:
+        print(f"{RED}Please specify a session (number or ID).{RESET}")
+        print(f"Example: {CYAN}:session-resume 1 --from 2{RESET}")
+        return
+
+    if from_step_str is None:
+        print(f"{RED}Please specify --from <step>.{RESET}")
+        print(f"Example: {CYAN}:session-resume {session_ref} --from 1{RESET}")
+        return
+
+    # Validate step number (allow 0 for base commit)
+    try:
+        from_step = int(from_step_str)
+    except ValueError:
+        print(f"{RED}Invalid step number: '{from_step_str}' is not a number.{RESET}")
+        return
+
+    if from_step < 0:
+        print(f"{RED}Invalid step number: must be 0 or greater, got {from_step}.{RESET}")
+        print(f"Use 0 to resume from the base commit (before any steps).")
+        return
+
+    manager = SessionManager()
+    sess, error = _resolve_session_ref(manager, session_ref)
+
+    if error:
+        print(f"{RED}{error}{RESET}")
+        print(f"Use {CYAN}:sessions{RESET} to see available sessions.")
+        return
+
+    # Validate step number against session
+    if from_step > len(sess.steps):
+        print(f"{RED}Step {from_step} not found in session.{RESET}")
+        print(f"Session has {len(sess.steps)} step(s). Use step 0-{len(sess.steps)}.")
+        return
+
+    # Get commit hash for the step
+    if from_step == 0:
+        commit_hash = sess.base_commit
+        if not commit_hash:
+            print(f"{RED}Session has no base commit recorded.{RESET}")
+            print(f"The session may have been run with auto_commit disabled.")
+            return
+    else:
+        step = sess.get_step(from_step)
+        commit_hash = step.commit_hash if step else None
+        if not commit_hash:
+            print(f"{RED}Step {from_step} has no commit hash recorded.{RESET}")
+            print(f"To use resume, enable auto_commit in config: [session] auto_commit = true")
+            return
+
+    # Show what we're about to do
+    print(f"\n{BOLD}Resume Session {YELLOW}{sess.short_id}{RESET}")
+    print(f"{DIM}{'=' * 50}{RESET}\n")
+    print(f"  Prompt:      {sess.prompt[:50]}")
+    print(f"  From step:   {from_step}")
+    print(f"  Commit:      {commit_hash[:12]}")
+    print(f"  Mode:        {'in-place reset' if in_place else 'worktree'}")
+    print()
+
+    # List remaining steps
+    remaining_steps = [s for s in sess.steps if s.step_number > from_step]
+    if remaining_steps:
+        print(f"{BOLD}Steps to re-run:{RESET}")
+        for step in remaining_steps:
+            print(f"  {step.step_number}. {step.function_name}")
+        print()
+
+    if in_place:
+        # In-place reset of current directory
+        _resume_in_place(sess, from_step, commit_hash)
+    else:
+        # Create worktree from commit
+        _resume_with_worktree(sess, from_step, commit_hash)
+
+
+def _resume_in_place(sess, from_step: int, commit_hash: str) -> None:
+    """Reset current directory to a specific commit for resume.
+
+    This is faster than creating a worktree but requires user confirmation
+    as it may discard local changes.
+    """
+    import subprocess
+
+    # Check for uncommitted changes
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=sess.cwd,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.stdout.strip():
+        print(f"{YELLOW}Warning: You have uncommitted changes.{RESET}")
+        print(f"In-place reset will discard these changes:")
+        for line in result.stdout.strip().split("\n")[:5]:
+            print(f"  {line}")
+        if len(result.stdout.strip().split("\n")) > 5:
+            print(f"  ... and more")
+        print()
+        print(f"{RED}This action is destructive. Changes will be lost.{RESET}")
+        print(f"To preserve changes, use worktree mode (without --in-place).")
+        print()
+        print(f"To proceed anyway, run: {CYAN}git reset --hard {commit_hash[:8]}{RESET}")
+        return
+
+    # Perform the reset
+    try:
+        result = subprocess.run(
+            ["git", "reset", "--hard", commit_hash],
+            cwd=sess.cwd,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode == 0:
+            print(f"{GREEN}Reset to commit {commit_hash[:8]}{RESET}")
+            print()
+            print(f"{BOLD}To continue:{RESET}")
+            print(f"  {CYAN}lion \"{sess.prompt}\"{RESET}")
+        else:
+            print(f"{RED}Failed to reset: {result.stderr}{RESET}")
+
+    except Exception as e:
+        print(f"{RED}Error during reset: {e}{RESET}")
+
+
+def _resume_with_worktree(sess, from_step: int, commit_hash: str) -> None:
+    """Create a worktree from commit for resume."""
+    try:
+        from ..worktree import WorktreeManager
+        wt_manager = WorktreeManager(cwd=sess.cwd)
+        worktree = wt_manager.reset_to_step(sess, from_step)
+
+        if worktree:
+            print(f"{GREEN}Created worktree at commit {commit_hash[:8]}:{RESET}")
+            print(f"  Path:   {worktree.path}")
+            print(f"  Branch: {worktree.branch}")
+            print()
+            print(f"{BOLD}To continue working:{RESET}")
+            print(f"  1. {CYAN}cd {worktree.path}{RESET}")
+            print(f"  2. {CYAN}lion \"{sess.prompt}\"{RESET}")
+            print()
+            print(f"{BOLD}When done:{RESET}")
+            print(f"  - Merge changes: {CYAN}git merge {worktree.branch}{RESET} (from original repo)")
+            print(f"  - Or cherry-pick: {CYAN}git cherry-pick <commits>{RESET}")
+            print(f"  - Clean up: {CYAN}git worktree remove {worktree.path}{RESET}")
+        else:
+            print(f"{RED}Failed to create worktree.{RESET}")
+            print(f"Make sure you're in a git repository and the commit {commit_hash[:8]} exists.")
+
+    except Exception as e:
+        print(f"{RED}Error creating worktree: {e}{RESET}")
+
+
+def cmd_session_replay(session: SessionState, args: list[str]) -> None:
+    """Replay a session (read-only display of what happened)."""
+    if not args:
+        print(f"{YELLOW}Usage: :session-replay <id>{RESET}")
+        print(f"Replays session, showing each step's execution in sequence.")
+        print(f"Use session number (#1) or stable ID (abc12345).")
+        return
+
+    manager = SessionManager()
+    sess, error = _resolve_session_ref(manager, args[0])
+
+    if error:
+        print(f"{RED}{error}{RESET}")
+        print(f"Use {CYAN}:sessions{RESET} to see available sessions.")
+        return
+
+    print(f"\n{BOLD}Replaying Session {YELLOW}{sess.short_id}{RESET}")
+    print(f"{DIM}{'=' * 60}{RESET}\n")
+
+    # Header
+    started_at = datetime.fromtimestamp(sess.started_at).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"  {DIM}Prompt:{RESET}   {sess.prompt}")
+    print(f"  {DIM}Pipeline:{RESET} {sess.pipeline}")
+    print(f"  {DIM}Started:{RESET}  {started_at}")
+    print(f"  {DIM}Base:{RESET}     {sess.base_commit[:12] if sess.base_commit else 'n/a'}")
+    print()
+
+    # Show each step as a timeline
+    print(f"{BOLD}Execution Timeline:{RESET}\n")
+
+    for step in sess.steps:
+        # Step header
+        status_symbols = {
+            "completed": f"{GREEN}[OK]{RESET}",
+            "failed": f"{RED}[FAIL]{RESET}",
+            "running": f"{YELLOW}[...]{RESET}",
+            "pending": f"{DIM}[--]{RESET}",
+            "skipped": f"{MAGENTA}[SKIP]{RESET}",
+        }
+        status_sym = status_symbols.get(step.status, "[?]")
+
+        duration_str = f" ({step.duration:.1f}s)" if step.duration else ""
+
+        print(f"  {status_sym} {BOLD}Step {step.step_number}: {step.function_name}{RESET}{duration_str}")
+
+        # Commit info
+        if step.commit_hash:
+            print(f"       {DIM}commit: {step.commit_hash[:12]}{RESET}")
+
+        # Files changed
+        if step.files_changed:
+            print(f"       {DIM}files:{RESET}")
+            for f in step.files_changed[:5]:
+                print(f"         - {f}")
+            if len(step.files_changed) > 5:
+                print(f"         {DIM}... and {len(step.files_changed) - 5} more{RESET}")
+
+        # Error if any
+        if step.error:
+            print(f"       {RED}error: {step.error[:80]}{RESET}")
+
+        print()
+
+    # Summary
+    completed_steps = sum(1 for s in sess.steps if s.status == "completed")
+    failed_steps = sum(1 for s in sess.steps if s.status == "failed")
+    total_duration = sess.duration
+
+    print(f"{DIM}{'=' * 60}{RESET}")
+    print(f"\n{BOLD}Summary:{RESET}")
+    print(f"  Steps: {completed_steps} completed, {failed_steps} failed, {len(sess.steps)} total")
+    if total_duration:
+        print(f"  Duration: {total_duration:.1f}s")
+    print(f"  Tokens: {sess.total_tokens:,}")
+    print(f"  Status: {sess.status}")
+    print()
+
+
+def cmd_session_prune(session: SessionState, args: list[str]) -> None:
+    """Clean up old sessions based on count and age limits.
+
+    Removes sessions beyond the maximum limit or older than the age limit.
+    """
+    # Parse arguments
+    max_sessions = None
+    max_age_days = None
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--keep" and i + 1 < len(args):
+            max_sessions = _validate_positive_int(args[i + 1], "keep count", max_value=1000)
+            if max_sessions is None:
+                return
+            i += 2
+        elif args[i] == "--max-age" and i + 1 < len(args):
+            max_age_days = _validate_positive_int(args[i + 1], "max age days", max_value=365)
+            if max_age_days is None:
+                return
+            i += 2
+        elif args[i].startswith("--"):
+            print(f"{RED}Unknown option: {args[i]}{RESET}")
+            print(f"Valid options: --keep <n>, --max-age <days>")
+            return
+        else:
+            i += 1
+
+    manager = SessionManager()
+
+    # Show current state
+    all_sessions = manager.list_sessions(limit=500)
+    print(f"\n{BOLD}Session Cleanup{RESET}")
+    print(f"{DIM}{'=' * 50}{RESET}\n")
+    print(f"  Total sessions: {len(all_sessions)}")
+
+    if max_sessions is None and max_age_days is None:
+        # Show info and usage
+        print(f"\n{DIM}No cleanup parameters specified. Showing current state.{RESET}")
+        print(f"\n{BOLD}Usage:{RESET}")
+        print(f"  {CYAN}:session-prune --keep 50{RESET}        Keep only 50 most recent sessions")
+        print(f"  {CYAN}:session-prune --max-age 7{RESET}      Remove sessions older than 7 days")
+        print(f"  {CYAN}:session-prune --keep 50 --max-age 30{RESET}  Both limits")
+        return
+
+    # Perform cleanup
+    print(f"\n  Cleanup criteria:")
+    if max_sessions is not None:
+        print(f"    Keep max: {max_sessions} sessions")
+    if max_age_days is not None:
+        print(f"    Max age: {max_age_days} days")
+    print()
+
+    removed = manager.prune_sessions(
+        max_sessions=max_sessions,
+        max_age_days=max_age_days,
+    )
+
+    if removed > 0:
+        print(f"{GREEN}Removed {removed} session(s).{RESET}")
+        remaining = len(manager.list_sessions(limit=500))
+        print(f"  Remaining: {remaining} session(s)")
+    else:
+        print(f"No sessions to remove.")
+
+
 # Command dispatch table
 COMMANDS: dict[str, Callable[[SessionState, list[str]], None]] = {
     "help": cmd_help,
@@ -896,6 +1487,18 @@ COMMANDS: dict[str, Callable[[SessionState, list[str]], None]] = {
     "context-toggle": cmd_context_toggle,
     # Interactive mode
     "interactive": cmd_interactive,
+    # Session history commands
+    "session-history": cmd_session_history,
+    "sessions": cmd_session_history,
+    "sh": cmd_session_history,
+    "session-detail": cmd_session_detail,
+    "sd": cmd_session_detail,
+    "session-resume": cmd_session_resume,
+    "sr": cmd_session_resume,
+    "session-replay": cmd_session_replay,
+    "splay": cmd_session_replay,
+    "session-prune": cmd_session_prune,
+    "sprune": cmd_session_prune,
 }
 
 
@@ -1162,6 +1765,113 @@ Without arguments, shows current mode and available shortcuts.""",
             ":interactive",
             ":interactive on",
             ":interactive off",
+        ],
+    },
+    "session-history": {
+        "brief": "Show pipeline session history with commit hashes",
+        "detail": """Show recent pipeline sessions from ~/.lion/sessions/.
+
+Each session tracks:
+  - The original prompt and pipeline
+  - Git commit hashes at each step
+  - Status (completed, failed, running, interrupted)
+  - Token usage and timing
+
+Sessions can be referenced by:
+  - Recency number: #1, #2, #3 (1 = most recent)
+  - Stable short ID: abc12345 (8-char hex, never changes)
+
+Aliases: :sessions, :sh""",
+        "examples": [
+            ":session-history",
+            ":sessions",
+            ":sh 20",
+        ],
+    },
+    "session-detail": {
+        "brief": "Show detailed session with step commits",
+        "detail": """Show detailed information about a specific session.
+
+Displays:
+  - Session metadata (prompt, pipeline, cwd, timestamps)
+  - Each step with its commit hash
+  - Files changed at each step
+  - Token usage and errors
+
+Reference sessions by number (#1) or stable ID (abc12345).
+
+Aliases: :sd""",
+        "examples": [
+            ":session-detail 1",
+            ":session-detail abc12345",
+            ":sd 3",
+        ],
+    },
+    "session-resume": {
+        "brief": "Resume session from a specific step",
+        "detail": """Resume a session from a specific step.
+
+Two modes available:
+  - Worktree (default): Creates a new worktree, preserves current state
+  - In-place (--in-place): Resets current directory to the commit
+
+Use --from 0 to start from the base commit (before any steps).
+
+Reference sessions by number (#1) or stable ID (abc12345).
+
+Worktree workflow:
+  1. Run :session-resume <id> --from <step> to create the worktree
+  2. cd into the worktree path shown
+  3. Run lion with your prompt to continue
+  4. When done, merge changes back: git merge <branch>
+  5. Clean up: git worktree remove <path>
+
+In-place workflow:
+  1. Run :session-resume <id> --from <step> --in-place
+  2. Run lion with your prompt to continue
+
+Aliases: :sr""",
+        "examples": [
+            ":session-resume 1 --from 2",
+            ":session-resume abc12345 --from 0",
+            ":sr 1 --from 2 --in-place",
+        ],
+    },
+    "session-replay": {
+        "brief": "Replay a session (read-only)",
+        "detail": """Replay a session showing what happened at each step.
+
+This is a read-only view of the session execution timeline,
+showing status, commits, files changed, and errors for each step.
+
+Reference sessions by number (#1) or stable ID (abc12345).
+
+Aliases: :splay""",
+        "examples": [
+            ":session-replay 1",
+            ":session-replay abc12345",
+            ":splay 3",
+        ],
+    },
+    "session-prune": {
+        "brief": "Clean up old sessions",
+        "detail": """Remove old sessions based on count and/or age limits.
+
+Options:
+  --keep <n>      Keep only the N most recent sessions
+  --max-age <d>   Remove sessions older than D days
+
+Without options, shows current session count and usage.
+
+Sessions are stored in ~/.lion/sessions/ and can accumulate over time.
+Use this command periodically to clean up old sessions.
+
+Aliases: :sprune""",
+        "examples": [
+            ":session-prune",
+            ":session-prune --keep 50",
+            ":session-prune --max-age 7",
+            ":session-prune --keep 100 --max-age 30",
         ],
     },
 }
