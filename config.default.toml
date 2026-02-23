@@ -159,3 +159,36 @@ self_heal_categories = ["secrets", "config"]
 # - debug_mode: Set DEBUG = False
 # - ssl_verify: Set verify = True
 self_heal_rules = ["secrets_to_env", "debug_false", "ssl_verify_true"]
+
+# Desktop notifications configuration
+[notifications]
+# Enable/disable desktop notifications
+enabled = true
+
+# Play sound with notifications (macOS only)
+sound = true
+
+# Event types to notify on (pipeline_complete, test_failed, input_needed)
+events = ["pipeline_complete", "test_failed", "input_needed"]
+
+# Token quota tracking configuration
+[quota]
+# Enable quota tracking and warnings
+enabled = true
+
+# Daily token limits per model (0 = no limit)
+# Uncomment and adjust based on your API plan
+# daily_limits = { claude = 100000, gemini = 500000 }
+
+# Warning threshold (0.0-1.0) - warn when usage exceeds this percentage
+warn_threshold = 0.8
+
+# IMPORTANT LIMITATIONS:
+# - Per-machine tracking: Each machine (laptop, desktop, CI) tracks separately
+#   There is no centralized quota tracking across machines.
+# - Concurrent access: File locking handles multiple Lion processes on one machine
+# - Best-effort accuracy: Token counts are approximations from provider responses
+# - Daily reset: Resets at midnight local time (based on system clock)
+#
+# For accurate billing, always refer to your provider's dashboard.
+# This quota tracking is for approximate awareness only.

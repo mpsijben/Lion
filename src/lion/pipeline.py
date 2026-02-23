@@ -9,6 +9,7 @@ from .parser import PipelineStep
 from .memory import SharedMemory, MemoryEntry
 from .display import Display
 from .providers import get_provider
+from .providers.base import set_quota_recorder
 from .functions import FUNCTIONS
 from .context import (
     ContextBudgetManager,
@@ -16,6 +17,7 @@ from .context import (
     detect_relevant_files,
     select_context_mode,
 )
+from .status import QuotaTracker
 from .worktree import WorktreeManager, ConflictResolver
 
 # Functions that produce code (call implement(), write files to disk)
@@ -215,6 +217,10 @@ class PipelineExecutor:
         # Store pipeline steps in config for pride() to access
         self.config["_pipeline_steps"] = self.steps
 
+        # Set up quota tracking for providers
+        self._quota_tracker = QuotaTracker(config)
+        set_quota_recorder(self._quota_tracker.record_usage)
+
     def _expand_patterns(self, steps):
         """Expand __pattern__ meta-steps into actual steps."""
         expanded = []
@@ -227,6 +233,14 @@ class PipelineExecutor:
 
     def run(self) -> PipelineResult:
         """Execute the full pipeline."""
+        try:
+            return self._run_impl()
+        finally:
+            # Clean up quota recorder to avoid leaking between pipelines
+            set_quota_recorder(None)
+
+    def _run_impl(self) -> PipelineResult:
+        """Internal implementation of run()."""
         start_time = time.time()
 
         Display.pipeline_start(self.prompt, self.steps)

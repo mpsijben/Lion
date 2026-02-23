@@ -15,6 +15,7 @@ from .rich_renderer import RICH_AVAILABLE, get_panel_renderer
 from ..display import GREEN, YELLOW, RED, BLUE, CYAN, DIM, BOLD, RESET, MAGENTA
 from ..memory import SharedMemory
 from ..lenses import list_lenses, get_lens
+from ..status import StatusDashboard
 
 
 def cmd_help(session: SessionState, args: list[str]) -> None:
@@ -70,6 +71,10 @@ def cmd_help(session: SessionState, args: list[str]) -> None:
         print(f"\n{BOLD}Session:{RESET}")
         print(f"  {CYAN}:quit{RESET} or {CYAN}:q{RESET}              - Exit LionCLI")
         print(f"  {CYAN}:clear{RESET}                    - Clear current run")
+
+        print(f"\n{BOLD}Status & Quota:{RESET}")
+        print(f"  {CYAN}:dashboard{RESET} or {CYAN}:dash{RESET}      - Show status dashboard (quota, sessions, active)")
+        print(f"  {CYAN}:quota{RESET}                    - Alias for :dashboard")
 
         print(f"\n{DIM}Type :help <command> for detailed help.{RESET}")
         print(f"{DIM}Enter a prompt directly to execute a pipeline.{RESET}\n")
@@ -850,6 +855,57 @@ def cmd_interactive(session: SessionState, args: list[str]) -> None:
         print(f"Usage: :interactive on|off")
 
 
+def cmd_status_dashboard(session: SessionState, args: list[str]) -> None:
+    """Show the Lion status dashboard with quota, sessions, and active pipelines.
+
+    Always uses ~/.lion for global data (quota, overall sessions) to ensure
+    consistent behavior across directories. This avoids confusion where
+    running 'lion status' from different directories shows different data.
+    """
+    # Parse arguments
+    use_json = "--json" in args or "-j" in args
+    show_local = "--local" in args or "-l" in args
+
+    # Always use home directory for consistent global data
+    # This ensures quota tracking and session history are not fragmented
+    # across different project directories.
+    home_lion_dir = Path.home() / ".lion"
+    home_runs_dir = home_lion_dir / "runs"
+
+    # Optionally show local project data if --local flag is passed
+    if show_local:
+        local_lion_dir = session.cwd / ".lion"
+        if local_lion_dir.exists():
+            dashboard = StatusDashboard(
+                config=session.config,
+                runs_dir=local_lion_dir / "runs",
+                lion_dir=local_lion_dir,
+            )
+            data_source = f"{local_lion_dir} (local project)"
+        else:
+            print(f"{YELLOW}No local .lion directory found in {session.cwd}{RESET}")
+            print(f"Use {CYAN}:dashboard{RESET} without --local to see global data from ~/.lion")
+            return
+    else:
+        dashboard = StatusDashboard(
+            config=session.config,
+            runs_dir=home_runs_dir,
+            lion_dir=home_lion_dir,
+        )
+        data_source = f"{home_lion_dir} (global)"
+
+    output = dashboard.render(use_json=use_json)
+    print(output)
+
+    # Show data source for user clarity (not in JSON mode)
+    if not use_json:
+        print(f"{DIM}Data source: {data_source}{RESET}")
+        if not show_local:
+            local_lion_dir = session.cwd / ".lion"
+            if local_lion_dir.exists():
+                print(f"{DIM}Tip: Use --local to see data from this project's .lion directory{RESET}")
+
+
 # Command dispatch table
 COMMANDS: dict[str, Callable[[SessionState, list[str]], None]] = {
     "help": cmd_help,
@@ -896,6 +952,10 @@ COMMANDS: dict[str, Callable[[SessionState, list[str]], None]] = {
     "context-toggle": cmd_context_toggle,
     # Interactive mode
     "interactive": cmd_interactive,
+    # Status dashboard
+    "dashboard": cmd_status_dashboard,
+    "dash": cmd_status_dashboard,
+    "quota": cmd_status_dashboard,
 }
 
 
@@ -1162,6 +1222,39 @@ Without arguments, shows current mode and available shortcuts.""",
             ":interactive",
             ":interactive on",
             ":interactive off",
+        ],
+    },
+    "dashboard": {
+        "brief": "Show status dashboard",
+        "detail": """Show the Lion status dashboard with quota usage, today's sessions, and active pipelines.
+
+The dashboard displays:
+- Quota usage per model with daily limits and warnings
+- Today's pipeline runs with token usage and status
+- Currently active (running) pipelines
+
+By default, reads from ~/.lion (global data) to ensure consistent behavior
+across directories. Use --local to view project-specific data instead.
+
+Flags:
+  --json, -j   Output machine-readable JSON instead of formatted tables
+  --local, -l  Show data from current project's .lion directory instead of global
+
+The dashboard reads data from:
+- ~/.lion/quota.json for quota tracking
+- ~/.lion/runs/ for session history
+- ~/.lion/active/ for running pipelines
+
+Note: Quota tracking is per-machine. Running Lion from multiple machines
+(laptop, desktop, CI) will track usage separately on each machine.
+
+Aliases: :dash, :quota""",
+        "examples": [
+            ":dashboard",
+            ":dash",
+            ":quota",
+            ":dashboard --json",
+            ":dashboard --local",
         ],
     },
 }
