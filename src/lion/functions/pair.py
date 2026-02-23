@@ -305,6 +305,43 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
             # Lead finished without interrupt
             complete = True
 
+    # Final eye check: if the lead finished before reaching check_interval,
+    # run the eyes one last time so short outputs still get reviewed.
+    if lead_output.strip() and complete:
+        Display.phase("pair", "Lead done, running final eye check...")
+        final_findings = _check_eyes_parallel(eyes, lead_output)
+        if final_findings:
+            all_findings.extend(final_findings)
+            for f in final_findings:
+                Display.pair_finding(f.eye_name, f.lens, f.description, f.latency)
+                memory.write(MemoryEntry(
+                    timestamp=time.time(),
+                    phase="pair",
+                    agent=f.eye_name,
+                    type="finding",
+                    content=f.description,
+                    metadata={"lens": f.lens, "latency": f.latency},
+                ))
+
+            # Resume lead with corrections from final check
+            Display.pair_interrupt(interrupt_count + 1, len(final_findings))
+            interrupt_count += 1
+            correction = _build_correction_prompt(final_findings)
+            memory.write(MemoryEntry(
+                timestamp=time.time(),
+                phase="pair",
+                agent="pair_orchestrator",
+                type="interrupt",
+                content=correction,
+                metadata={"interrupt_number": interrupt_count},
+            ))
+            lead.resume(correction)
+            # Collect the corrected output
+            for chunk in lead.chunks():
+                lead_output += chunk.text
+        else:
+            Display.pair_clean(len(eyes))
+
     wall_clock = time.time() - start_time
     total_lines = lead_output.count("\n")
 

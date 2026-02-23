@@ -1,10 +1,10 @@
-# 🦁 LION — Fuse, Pair & Multi-Swarm: Real-Time Agent Collaboration
+# Lion -- Fuse, Pair & Multi-Swarm: Real-Time Agent Collaboration
 
 ## The Problem: Sequential Agents & Cascading Hallucinations
 
 Every multi-agent framework today works like a 1990s corporate bureaucracy. Agent A writes 100 lines of code, stops, passes the baton to Agent B for review. Agent B writes a critique. Agent A rewrites everything. This is AutoGen. This is CrewAI. This is LangGraph.
 
-The fundamental flaw: **if Agent A makes an architectural error on line 5, it still generates the remaining 95 lines before anyone notices.** Errors don't stay contained — they cascade. The wrong database choice on line 5 leads to wrong schema on line 20, wrong queries on line 40, wrong error handling on line 60. By the time a reviewer sees it, the entire file is built on a broken foundation.
+The fundamental flaw: **if Agent A makes an architectural error on line 5, it still generates the remaining 95 lines before anyone notices.** Errors don't stay contained -- they cascade. The wrong database choice on line 5 leads to wrong schema on line 20, wrong queries on line 40, wrong error handling on line 60. By the time a reviewer sees it, the entire file is built on a broken foundation.
 
 This is **Cascading Hallucinations**: errors that compound because feedback arrives too late.
 
@@ -21,7 +21,7 @@ pride(3) → impl() → review(^) → devil(^)
                    ~165 seconds
 ```
 
-The temptation is to solve this by adding management layers — a "tech lead" agent that reviews plans, a "project manager" agent that coordinates, a "QA" agent that validates. But AI agents don't have egos, don't need meetings to align, and can process vast amounts of context instantly. **Management is wasted tokens. Pure, real-time engineering collaboration is the solution.**
+The temptation is to solve this by adding management layers -- a "tech lead" agent that reviews plans, a "project manager" agent that coordinates, a "QA" agent that validates. But AI agents don't have egos, don't need meetings to align, and can process vast amounts of context instantly. **Management is wasted tokens. Pure, real-time engineering collaboration is the solution.**
 
 ## What Lion Actually Is
 
@@ -29,7 +29,7 @@ Lion is not a "multi-agent framework". There are plenty of those.
 
 **Lion is a streaming-aware, interrupt-driven, process-level LLM scheduler.**
 
-The distinction matters. Most agent frameworks operate at the *prompt orchestration layer* — they compose messages, chain API calls, and pass results between agents. They treat LLMs as functions: input → output → next function.
+The distinction matters. Most agent frameworks operate at the *prompt orchestration layer* -- they compose messages, chain API calls, and pass results between agents. They treat LLMs as functions: input → output → next function.
 
 Lion operates at the *process orchestration layer*. It treats LLMs as **OS processes that can be scheduled, interrupted, killed, and resumed**. This is a systems-engineering perspective, not a prompt-engineering one.
 
@@ -37,7 +37,7 @@ The core mechanism: `subprocess.Popen` → stream interception → `terminate()`
 
 **What this enables that prompt orchestration cannot:**
 
-LLM generation is inherently **open loop** — the model generates tokens sequentially with no external feedback until it finishes. Every framework that reviews output after generation accepts this. They add a review step, get feedback, regenerate. That's still open loop with a retry.
+LLM generation is inherently **open loop** -- the model generates tokens sequentially with no external feedback until it finishes. Every framework that reviews output after generation accepts this. They add a review step, get feedback, regenerate. That's still open loop with a retry.
 
 Lion turns LLM generation into a **closed loop control system**. The output stream is continuously monitored by observer processes (eyes). When the output deviates from acceptable parameters (security flaw, architectural mistake), a control signal fires (interrupt), the process adjusts (correction via resume), and generation continues on the corrected trajectory. Real-time feedback, not post-hoc retry.
 
@@ -55,9 +55,9 @@ The difference: in open loop, the model builds 190 lines on a broken foundation 
 
 **Is this idea conceptually unique?** No. Real-time feedback loops, multi-agent review, and stream interruption exist as concepts. Google's ADK blog describes "interruptibility" in streaming agents. AgentAsk (2025) formalizes edge-level intervention to prevent cascading errors.
 
-**Is this implementation unique?** Yes. Nobody has productized this at the process level — using CLI terminate + resume with session persistence, cross-model eyes on flat-rate subscriptions, and dynamic leader election (mutiny) where the observer becomes the writer. The existing multi-CLI tools (Claude Code Bridge, Claude Octopus, Claude-Code-Workflow) all operate turn-based or in parallel-but-independent modes. None do mid-generation stream interception with interrupt.
+**Is this implementation unique?** Yes. Nobody has productized this at the process level -- using CLI terminate + resume with session persistence, cross-model eyes on flat-rate subscriptions, and dynamic leader election (mutiny) where the observer becomes the writer. The existing multi-CLI tools (Claude Code Bridge, Claude Octopus, Claude-Code-Workflow) all operate turn-based or in parallel-but-independent modes. None do mid-generation stream interception with interrupt.
 
-**The defensible claim is not "nobody thought of this" — it's "nobody built this at the process level and shipped it."**
+**The defensible claim is not "nobody thought of this" -- it's "nobody built this at the process level and shipped it."**
 
 ### When Lion Adds Value (and When It Doesn't)
 
@@ -91,7 +91,7 @@ What if agents could work the same way?
 
 ## Two New Primitives
 
-### `pair()` — Live Pair Programming (Stream Interruption)
+### `pair()` -- Live Pair Programming (Stream Interruption)
 
 One Lead Agent implements code while multiple "Eye" Agents watch the output stream in real-time. If an Eye spots an issue, it triggers a **hard interrupt**, stopping the Lead mid-sentence, injecting the correction, and forcing an immediate pivot.
 
@@ -124,7 +124,7 @@ pair(claude.opus, eyes: sec+arch+perf):
   ┃  Cascading hallucinations caught at line 5, not line 95.
 ```
 
-Each eye has a **lens** — a focused domain of expertise:
+Each eye has a **lens** -- a focused domain of expertise:
 
 | Eye | Lens | Watches for |
 |-----|------|-------------|
@@ -133,7 +133,7 @@ Each eye has a **lens** — a focused domain of expertise:
 | `perf` | Performance | N+1 queries, missing indexes, memory leaks, connection pooling |
 | `test` | Testability | Untestable code, missing interfaces, hard dependencies |
 
-**Eyes don't just critique — they research.** When the security eye sees JWT usage, it can spawn a subagent to check current best practices and inject findings into the lead's stream. This is the **lead-listener pattern**: asymmetric enrichment via background research + interrupt.
+**Eyes don't just critique -- they research.** When the security eye sees JWT usage, it can spawn a subagent to check current best practices and inject findings into the lead's stream. This is the **lead-listener pattern**: asymmetric enrichment via background research + interrupt.
 
 ```bash
 # Pair programming with 2 eyes
@@ -143,12 +143,12 @@ lion '"Build auth" -> pair(claude.opus, eyes: sec+arch)'
 lion '"Build API" -> pair(claude.opus, eyes: sec.haiku+arch.haiku+perf.haiku)'
 ```
 
-### `fuse(n)` — Real-Time Deliberation
+### `fuse(n)` -- Real-Time Deliberation
 
 Replaces `pride(n)` for architectural planning. Instead of sequential propose → critique → converge rounds, `n` agents deliberate simultaneously, each seeing the others' partial output as it streams.
 
 ```
-pride(3) — sequential rounds:                    fuse(3) — real-time:
+pride(3) -- sequential rounds:                    fuse(3) -- real-time:
   Agent A proposes        [10s]                    Agent A ──stream──▶
   Agent B proposes        [10s]                    Agent B ──stream──▶  all see each other
   Agent C proposes        [10s]                    Agent C ──stream──▶
@@ -164,11 +164,11 @@ How it works:
 
 1. All agents start streaming their approach simultaneously
 2. Every ~100 tokens, LION injects each agent's partial output into the others' streams
-3. Agents dynamically react to peers — agreeing, disagreeing, expanding — mid-thought
+3. Agents dynamically react to peers -- agreeing, disagreeing, expanding -- mid-thought
 4. Convergence happens organically within the stream, not as a separate phase
 5. ~30 seconds, compared to ~74 seconds in sequential setups
 
-This is validated by the **Group Think paper** (MediaTek, May 2025): token-level collaboration between concurrent reasoning threads yields **4× latency reduction** and **improved accuracy** — even with models not specifically trained for collaboration.
+This is validated by the **Group Think paper** (MediaTek, May 2025): token-level collaboration between concurrent reasoning threads yields **4× latency reduction** and **improved accuracy** -- even with models not specifically trained for collaboration.
 
 ```bash
 # Fuse replaces pride for deliberation
@@ -189,9 +189,9 @@ lion '"Build payment system" -> fuse(3) -> pair(claude.opus, eyes: sec+arch+perf
 ```
 fuse(3):                                           [~30 sec]
   3 agents deliberate in real-time
-  Agent A: "We should use Stripe's PaymentIntents API—"
-  Agent B: "Agreed, but we need idempotency keys for—"
-  Agent C: "And webhook verification, not polling—"
+  Agent A: "We should use Stripe's PaymentIntents API--"
+  Agent B: "Agreed, but we need idempotency keys for--"
+  Agent C: "And webhook verification, not polling--"
   → converged plan emerges from the stream
 
   ↓ plan flows into pair()
@@ -243,7 +243,7 @@ You get the architectural brilliance of Opus, safeguarded by the real-time, low-
 lion '"Build payment system" -> pair(claude.opus, eyes: sec.gemini+arch.haiku+perf.gemini)'
 ```
 
-**Cost model:** Eyes read a lot (consuming input tokens) but generate little (short findings). The lead generates all the code. Total cost is dominated by the lead — eyes add ~10-20% overhead. With Gemini Flash's free tier (60 req/min, 1000/day), eyes can be literally free.
+**Cost model:** Eyes read a lot (consuming input tokens) but generate little (short findings). The lead generates all the code. Total cost is dominated by the lead -- eyes add ~10-20% overhead. With Gemini Flash's free tier (60 req/min, 1000/day), eyes can be literally free.
 
 ## From Single Task to Multi-Swarm Orchestrator
 
@@ -253,7 +253,7 @@ Putting 10 agents on one task doesn't scale. Every agent needs to read everythin
 
 ### The Solution: Micro-Swarms (Pods)
 
-Instead of one giant team, LION acts as a **Multi-Swarm Orchestrator** — Kubernetes for AI agents.
+Instead of one giant team, LION acts as a **Multi-Swarm Orchestrator** -- Kubernetes for AI agents.
 
 When given an epic task, LION breaks it down using `task()` and spawns isolated micro-swarms. Each swarm is a small `pair()` unit (1 Lead + 2-3 Eyes) dedicated to a single feature.
 
@@ -349,7 +349,7 @@ This is Kubernetes for AI agents: LION is the orchestrator, worktrees are pods, 
 
 ## Why the Plan Phase Can Disappear
 
-Traditional agent workflows front-load a heavy planning phase: multiple agents deliberate, critique, converge on an architecture — *before a single line of code is written*. This takes 30-60 seconds and consumes 3+ CLI calls (which eat into your daily quota).
+Traditional agent workflows front-load a heavy planning phase: multiple agents deliberate, critique, converge on an architecture -- *before a single line of code is written*. This takes 30-60 seconds and consumes 3+ CLI calls (which eat into your daily quota).
 
 Why do they do this? Because without a plan, the implementation agent might pick the wrong approach and waste 200 lines of code. The plan is a **preemptive insurance policy against cascade**.
 
@@ -374,11 +374,11 @@ pair() without plan:
 Savings: ~60-90 seconds AND 3+ fewer CLI calls against quota
 ```
 
-The plan phase doesn't just cost time — it costs quota. On Claude Max, Gemini Code Assist, and Codex subscriptions, you have daily request limits. Three agents deliberating burns three requests *before you start building*. With pair(), the eyes run as lightweight checks against the streaming output — typically cheaper on quota than full deliberation sessions.
+The plan phase doesn't just cost time -- it costs quota. On Claude Max, Gemini Code Assist, and Codex subscriptions, you have daily request limits. Three agents deliberating burns three requests *before you start building*. With pair(), the eyes run as lightweight checks against the streaming output -- typically cheaper on quota than full deliberation sessions.
 
 **When you still need a plan:**
 
-The plan is not always unnecessary. For tasks where the wrong *fundamental* choice wastes everything (microservices vs monolith, SQL vs NoSQL, REST vs GraphQL), you need to deliberate before building. The eyes can't save you from choosing the wrong database — they can only catch issues within the chosen architecture.
+The plan is not always unnecessary. For tasks where the wrong *fundamental* choice wastes everything (microservices vs monolith, SQL vs NoSQL, REST vs GraphQL), you need to deliberate before building. The eyes can't save you from choosing the wrong database -- they can only catch issues within the chosen architecture.
 
 | Task | Pipeline | Why |
 |------|----------|-----|
@@ -397,16 +397,16 @@ This means the threshold for "do I need a plan?" shifts upward. Tasks that previ
 With pair() absorbing most of the plan phase's job, the pipeline simplifies:
 
 ```bash
-# Speed 1 — Solo: small, obvious tasks
+# Speed 1 -- Solo: small, obvious tasks
 lion '"Fix the login bug"'
 # Just impl(). No overhead. <50 lines, pattern is clear.
 
-# Speed 2 — Pair: most tasks (the new default)
+# Speed 2 -- Pair: most tasks (the new default)
 lion '"Build auth" -> pair(claude, eyes: sec+arch)'
 # Live pair programming. Eyes replace both plan AND review.
 # 50-300 lines. Covers ~80% of real work.
 
-# Speed 3 — Full pipeline: architectural decisions + large scope
+# Speed 3 -- Full pipeline: architectural decisions + large scope
 lion '"Build SaaS platform" -> fuse(3) -> task(5) -> pair(claude, eyes: sec+arch+perf)'
 # Deliberate → decompose → parallel pair in worktrees.
 # 300+ lines, fundamental architecture choices.
@@ -438,13 +438,13 @@ Before diving into implementation, the billing model fundamentally shapes the ar
 
 **API key (pay-per-token):** Every restart re-sends all accumulated output as input tokens. 50 lines of code + 3 interrupts = paying for those 50 lines 4× as input. Interrupts have real cost.
 
-**For Lion, the primary path targets Max subscribers** — the people who already use Claude Code daily. This means `claude -p` with `--resume` is the optimal path, not the SDK.
+**For Lion, the primary path targets Max subscribers** -- the people who already use Claude Code daily. This means `claude -p` with `--resume` is the optimal path, not the SDK.
 
 ### Three Implementation Paths for Stream Interruption
 
-#### Path 1: CLI `--resume` (Primary — Works on Max Subscription)
+#### Path 1: CLI `--resume` (Primary -- Works on Max Subscription)
 
-`claude -p` with `--output-format stream-json` gives real-time streaming output. When an eye finds an issue, LION terminates the process and resumes the same session with `--resume`. The session lives on disk — **no context is lost**.
+`claude -p` with `--output-format stream-json` gives real-time streaming output. When an eye finds an issue, LION terminates the process and resumes the same session with `--resume`. The session lives on disk -- **no context is lost**.
 
 ```python
 import subprocess, json
@@ -454,7 +454,7 @@ def pair_cli_resume(task: str, eyes: list[Eye]):
     session_id = None
     
     while not complete:
-        # Build the command — first call or resume
+        # Build the command -- first call or resume
         cmd = ["claude", "-p", build_prompt(task, lead_output, findings=None),
                "--output-format", "stream-json"]
         if session_id:
@@ -505,7 +505,7 @@ def pair_cli_resume(task: str, eyes: list[Eye]):
 
 #### Dynamic Leader Election: The Mutiny Pattern
 
-Even with `--resume`, there's a restart penalty (~1-2 seconds to spin up a new CLI process). The Mutiny pattern eliminates this by letting the eye — whose context is already *warm* — write the fix directly.
+Even with `--resume`, there's a restart penalty (~1-2 seconds to spin up a new CLI process). The Mutiny pattern eliminates this by letting the eye -- whose context is already *warm* -- write the fix directly.
 
 **The insight:** When an eye finds a problem, it just spent tokens analyzing exactly that code. Its context is gloeiend heet. Why restart the lead and ask it to apply a fix it hasn't thought about, when the eye already has the solution loaded?
 
@@ -526,7 +526,7 @@ Mutiny flow (zero restart penalty):
 
 **The Asymmetric Problem & Micro-Mutiny**
 
-With the Avengers setup (expensive lead, cheap eyes), letting a cheap eye take over permanently is a downgrade. The solution: **Micro-Mutiny** — the eye writes only the fix (its context is warm for that), then hands back to the lead.
+With the Avengers setup (expensive lead, cheap eyes), letting a cheap eye take over permanently is a downgrade. The solution: **Micro-Mutiny** -- the eye writes only the fix (its context is warm for that), then hands back to the lead.
 
 ```python
 def pair_cli_mutiny(task: str, lead_model: str, eyes: list[Eye]):
@@ -560,7 +560,7 @@ def pair_cli_mutiny(task: str, lead_model: str, eyes: list[Eye]):
                         )
                         lead_output += fix
                     
-                    # Hand back to lead — resume with fix included
+                    # Hand back to lead -- resume with fix included
                     chunk = ""
                     break
         else:
@@ -577,9 +577,9 @@ def pair_cli_mutiny(task: str, lead_model: str, eyes: list[Eye]):
 | Eye finds a fundamental architecture flaw | Full mutiny: eye takes over as lead | The original approach is wrong, whoever sees it clearest should drive |
 | All eyes are the same model as lead (premium mode) | Full mutiny: whoever finds it, fixes it | No capability downgrade, fastest path wins |
 
-This is Dynamic Leader Election for AI agents — the watcher becomes the writer the moment it has the clearest view of the problem. No meetings, no handoffs, no restart penalty. The baton goes to whoever can run fastest *right now*.
+This is Dynamic Leader Election for AI agents -- the watcher becomes the writer the moment it has the clearest view of the problem. No meetings, no handoffs, no restart penalty. The baton goes to whoever can run fastest *right now*.
 
-#### Path 2: Claude Agent SDK (Upgrade — Requires API Key)
+#### Path 2: Claude Agent SDK (Upgrade -- Requires API Key)
 
 The Agent SDK (`ClaudeSDKClient`) provides true in-process interrupt: the lead pauses mid-sentence, receives the correction, and continues without process restart. Zero latency penalty, zero context loss.
 
@@ -618,7 +618,7 @@ async def pair_sdk(task: str, plan: str, lead_model: str, eyes: list[Eye]):
             
             critical = [f for f in findings if f != "NONE"]
             if critical:
-                # TRUE INTERRUPT — pauses mid-sentence, no context loss
+                # TRUE INTERRUPT -- pauses mid-sentence, no context loss
                 await lead.interrupt()
                 await lead.query(
                     f"Corrections from reviewers:\n" +
@@ -633,12 +633,12 @@ async def pair_sdk(task: str, plan: str, lead_model: str, eyes: list[Eye]):
 
 **Advantages over CLI path:** No process restart (~0ms interrupt vs ~2s), no disk I/O for session. But you pay per token and need API key management.
 
-#### Path 3: Gemini as Eye (Free Tier — Zero Cost Eyes)
+#### Path 3: Gemini as Eye (Free Tier -- Zero Cost Eyes)
 
-Gemini Flash's free tier (60 req/min, 1000/day) makes it perfect for eyes. Eyes read a lot but generate little — a perfect fit for a free API with generous rate limits.
+Gemini Flash's free tier (60 req/min, 1000/day) makes it perfect for eyes. Eyes read a lot but generate little -- a perfect fit for a free API with generous rate limits.
 
 ```python
-# Eye using Gemini free API — costs literally nothing
+# Eye using Gemini free API -- costs literally nothing
 def check_eye_gemini(eye: Eye, code: str) -> str | None:
     response = requests.post(
         "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent",
@@ -657,7 +657,7 @@ def check_eye_gemini(eye: Eye, code: str) -> str | None:
 
 ### Recommended Stack: Three CLIs on Subscription
 
-With Claude Max, Gemini Code Assist, and Codex (ChatGPT) subscriptions, you have three CLI tools — all flat-rate, all streamable, all with resume support:
+With Claude Max, Gemini Code Assist, and Codex (ChatGPT) subscriptions, you have three CLI tools -- all flat-rate, all streamable, all with resume support:
 
 | Tool | CLI | Streaming | Resume | Billing |
 |------|-----|-----------|--------|---------|
@@ -667,7 +667,7 @@ With Claude Max, Gemini Code Assist, and Codex (ChatGPT) subscriptions, you have
 
 Every terminate + restart costs €0 across all three tools. The only constraint is quota per tool.
 
-This enables the true Avengers setup — any model as lead, any as eye, all on flat-rate:
+This enables the true Avengers setup -- any model as lead, any as eye, all on flat-rate:
 
 ```bash
 # Claude builds, Gemini + Codex watch (all on subscription)
@@ -765,7 +765,7 @@ lion '"Build SaaS platform" -> task(5) -> fuse(3) -> pair(claude.opus, eyes: sec
 
 # "Break the platform into 5 features, deliberate on architecture,
 #  then pair-program each feature in parallel with security, architecture,
-#  and performance reviewers — each in its own isolated worktree"
+#  and performance reviewers -- each in its own isolated worktree"
 ```
 
 No YAML configs. No agent class hierarchies. No graph definitions. Just a pipeline that reads like English and executes like a swarm.
@@ -776,7 +776,7 @@ No YAML configs. No agent class hierarchies. No graph definitions. Just a pipeli
 
 ### Phase 1: The Stream Interceptor (Core Engine)
 
-Build a unified `StreamInterceptor` abstraction that wraps all three CLIs (Claude, Gemini, Codex), streams their output, and supports terminate + resume. This is the foundation — everything else builds on this.
+Build a unified `StreamInterceptor` abstraction that wraps all three CLIs (Claude, Gemini, Codex), streams their output, and supports terminate + resume. This is the foundation -- everything else builds on this.
 
 1. Abstract `StreamInterceptor` base class with `start()`, `chunks()`, `terminate()`, `resume()`
 2. `ClaudeInterceptor`: wraps `claude -p --output-format stream-json`, captures `session_id`, resumes via `--resume`
@@ -805,7 +805,7 @@ pair_poc/
 └── config.py              # CLI paths, models, chunk sizes
 ```
 
-**`interceptors/base.py`** — The abstract interface:
+**`interceptors/base.py`** -- The abstract interface:
 
 ```python
 from abc import ABC, abstractmethod
@@ -900,7 +900,7 @@ class StreamInterceptor(ABC):
         self.start(prompt)
 ```
 
-**`interceptors/claude.py`** — Claude CLI implementation:
+**`interceptors/claude.py`** -- Claude CLI implementation:
 
 ```python
 import json
@@ -938,7 +938,7 @@ class ClaudeInterceptor(StreamInterceptor):
             return None
 ```
 
-**`interceptors/gemini.py`** — Gemini CLI implementation:
+**`interceptors/gemini.py`** -- Gemini CLI implementation:
 
 ```python
 from .base import StreamInterceptor
@@ -961,11 +961,11 @@ class GeminiInterceptor(StreamInterceptor):
         return None
     
     def _extract_session_id(self, line: str) -> str | None:
-        # Gemini session handling — document from experiment 0
+        # Gemini session handling -- document from experiment 0
         return None
 ```
 
-**`interceptors/codex.py`** — Codex CLI implementation:
+**`interceptors/codex.py`** -- Codex CLI implementation:
 
 ```python
 import json
@@ -1002,7 +1002,7 @@ class CodexInterceptor(StreamInterceptor):
             return None
 ```
 
-**`eyes/lenses.py`** — Lens prompt templates:
+**`eyes/lenses.py`** -- Lens prompt templates:
 
 ```python
 LENSES = {
@@ -1036,7 +1036,7 @@ LENSES = {
 }
 ```
 
-**`eyes/eye.py`** — Eye runner:
+**`eyes/eye.py`** -- Eye runner:
 
 ```python
 from dataclasses import dataclass
@@ -1056,7 +1056,7 @@ class Eye:
     """An eye watches code and reports findings.
     
     Each eye wraps a StreamInterceptor (any CLI) with a lens (review focus).
-    Eyes run checks asynchronously — they don't block the lead.
+    Eyes run checks asynchronously -- they don't block the lead.
     """
     
     def __init__(self, interceptor: StreamInterceptor, lens: str, lens_prompt: str):
@@ -1090,11 +1090,11 @@ class Eye:
         )
 ```
 
-**`pair.py`** — The complete pair() loop:
+**`pair.py`** -- The complete pair() loop:
 
 ```python
 """
-pair() — The core Lion primitive.
+pair() -- The core Lion primitive.
 
 A streaming-aware, interrupt-driven, process-level pair programming loop.
 
@@ -1287,7 +1287,7 @@ Implement multi-session deliberation. Multiple `claude -p` processes run in para
 3. Parser: recognize `fuse(n)` or `fuse(model, model, model)` syntax
 4. Integration: `fuse()` output feeds into `pair()` or `impl()`
 
-### Phase 5: SDK Migration (Optional — for API key users)
+### Phase 5: SDK Migration (Optional -- for API key users)
 
 Upgrade from CLI to Agent SDK for true in-process interrupt without process restart.
 
@@ -1305,4 +1305,4 @@ Upgrade from CLI to Agent SDK for true in-process interrupt without process rest
 
 ---
 
-*This is the future of Lion. Not agents taking turns — agents working together. Not one giant team — isolated swarms, each with a builder and watchers, running in parallel on their own branch of the codebase.*
+*This is the future of Lion. Not agents taking turns -- agents working together. Not one giant team -- isolated swarms, each with a builder and watchers, running in parallel on their own branch of the codebase.*

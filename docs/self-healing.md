@@ -1,4 +1,4 @@
-# 🦁 LION — Roadmap v2
+# Lion -- Self-Healing Architecture & Pride/Impl Split
 
 ## Architecture Changes & New Features
 
@@ -18,14 +18,14 @@ pride(3) = propose → critique → converge → implement
            deliberation (thinking)           execution (building)
 ```
 
-This makes it impossible to choose a different model for implementation, and it prevents composition — you can't deliberate without building, or build without deliberating.
+This makes it impossible to choose a different model for implementation, and it prevents composition -- you can't deliberate without building, or build without deliberating.
 
 ### Solution
 
 Split pride into two functions:
 
-- **`pride()`** — pure deliberation: propose → critique → converge → produces a PLAN
-- **`impl()`** — execution: carries out the plan, writes files
+- **`pride()`** -- pure deliberation: propose → critique → converge → produces a PLAN
+- **`impl()`** -- execution: carries out the plan, writes files
 
 ```bash
 # New: deliberation and building are separate steps
@@ -74,7 +74,7 @@ review()  → checks again                         [1 LLM call]
                                          Total: ~19 LLM calls
 ```
 
-Review already knows exactly what's wrong and what the fix should be. It's absurd to send that back to pride to redo the entire propose/critique/converge/implement cycle — especially when it's just 1 agent.
+Review already knows exactly what's wrong and what the fix should be. It's absurd to send that back to pride to redo the entire propose/critique/converge/implement cycle -- especially when it's just 1 agent.
 
 ### Solution
 
@@ -88,7 +88,7 @@ typecheck(^)       # type errors + fix + verify
 lint(^)            # lint issues + fix + verify
 ```
 
-It reads well visually in a pipeline — you immediately see which steps self-heal:
+It reads well visually in a pipeline -- you immediately see which steps self-heal:
 
 ```bash
 lion '"Build auth" -> pride(3) -> impl() -> review(^) -> devil(^) -> test() -> pr()'
@@ -193,9 +193,9 @@ impl() => review() => devil()
 
 ### Rules
 
-- `=>` after `impl()` — starts as soon as first files are written
-- `=>` after analysis steps (review, devil, future) — those steps run in parallel
-- `=>` after `pride()` — starts as soon as the plan is ready (before execution)
+- `=>` after `impl()` -- starts as soon as first files are written
+- `=>` after analysis steps (review, devil, future) -- those steps run in parallel
+- `=>` after `pride()` -- starts as soon as the plan is ready (before execution)
 - Steps after `=>` must not depend on each other's output (they're parallel)
 
 ### Examples
@@ -306,7 +306,7 @@ class ClaudeProvider(Provider):
 
 ### Problem (solved by pride/impl split)
 
-The original challenge was: how do you select a different model per phase (propose, critique, converge, implement)? With the pride/impl split, the implement phase is already solved — that's just `impl(claude.opus)`.
+The original challenge was: how do you select a different model per phase (propose, critique, converge, implement)? With the pride/impl split, the implement phase is already solved -- that's just `impl(claude.opus)`.
 
 But within pride itself you still have propose, critique, and converge. For most users, profiles handle this cleanly.
 
@@ -524,7 +524,7 @@ low_pipeline = "impl()"
 
 1. Create `impl()` function in `functions/impl.py` (extract from current pride `_implement`)
 2. Remove implement phase from `execute_pride`
-3. Update `PRODUCER_FUNCTIONS` — impl becomes the producer, not pride
+3. Update `PRODUCER_FUNCTIONS` -- impl becomes the producer, not pride
 4. Update all tests and documentation
 
 ### Phase 2: Self-healing (the `^` operator)
@@ -581,4 +581,4 @@ low_pipeline = "impl()"
 
 ---
 
-*This document describes the next iteration of Lion. Implementation follows the phases above — each phase is independently deployable and testable.*
+*This document describes the next iteration of Lion. Implementation follows the phases above -- each phase is independently deployable and testable.*

@@ -1,4 +1,4 @@
-# 🦁 LION — Layer 2: Context Ecosystem
+# Lion -- Layer 2: Context Ecosystem
 
 ## Complete Specification for Cross-Agent Context Sharing
 
@@ -206,7 +206,7 @@ class ContextPackage:
         return int(tokens)
 ```
 
-### Minimal vs Standard vs Rich — What Gets Collected
+### Minimal vs Standard vs Rich -- What Gets Collected
 
 ```
 MINIMAL MODE:
@@ -304,7 +304,7 @@ WORKING DIRECTORY: {cwd}
 Propose your approach. Structure your response EXACTLY as follows:
 
 ## Approach
-[Your proposed approach — be specific about architecture, files, implementation]
+[Your proposed approach -- be specific about architecture, files, implementation]
 
 ## Reasoning
 [1-3 sentences: WHY you chose this over alternatives]
@@ -336,7 +336,7 @@ WORKING DIRECTORY: {cwd}
 Propose your approach. Structure your response EXACTLY as follows:
 
 ## Approach
-[Your proposed approach — be specific about architecture, files, implementation]
+[Your proposed approach -- be specific about architecture, files, implementation]
 
 ## Reasoning
 [1-3 sentences: WHY you chose this over alternatives]
@@ -392,7 +392,7 @@ INSTRUCTIONS:
 For each other proposal:
 1. Do you AGREE with their reasoning? If not, why?
 2. Do their uncertainties concern you?  
-3. Look at what they REJECTED — should any rejected alternative be reconsidered?
+3. Look at what they REJECTED -- should any rejected alternative be reconsidered?
 4. What did they think of that YOU missed?
 
 Keep your critique focused and concise.
@@ -401,7 +401,7 @@ Keep your critique focused and concise.
 
 **This is the core innovation.** Agent 1 doesn't just see "Agent 2 proposes sessions." Agent 1 sees "Agent 2 proposes sessions, reasoning: revocation concerns with JWT, rejected JWT because tokens can't be invalidated, uncertain about: Redis cluster complexity, confidence: 0.8."
 
-Now Agent 1 can respond: "Agent 2's reasoning about JWT revocation is valid. However, their rejected alternative (JWT + blacklist) actually solves this — I'd recommend reconsidering with a Redis-based blacklist. Their uncertainty about Redis cluster complexity is valid but solvable with managed Redis."
+Now Agent 1 can respond: "Agent 2's reasoning about JWT revocation is valid. However, their rejected alternative (JWT + blacklist) actually solves this -- I'd recommend reconsidering with a Redis-based blacklist. Their uncertainty about Redis cluster complexity is valid but solvable with managed Redis."
 
 **That's a fundamentally richer critique. The extra ~200 tokens of context metadata per agent produces dramatically better cross-agent understanding.**
 
@@ -488,7 +488,7 @@ def parse_confidence(text: str) -> float:
 
 ## 6. Context Functions
 
-### context() — Build Shared Mental Model
+### context() -- Build Shared Mental Model
 
 Runs BEFORE the pride. Creates a shared understanding of the codebase that all agents receive. This prevents agents from wasting their proposal tokens on rediscovering what the codebase looks like.
 
@@ -555,7 +555,7 @@ def execute_context(prompt, previous, step, memory, config, cwd, cost_manager):
 
 **Recommendation:** Use `context()` when pride has 3+ agents or when the codebase is unfamiliar.
 
-### distill() — Context Compression
+### distill() -- Context Compression
 
 Compresses the accumulated context from previous pipeline steps. Critical for long pipelines where context would otherwise balloon.
 
@@ -649,7 +649,7 @@ devil() receives:       ~2,000 tokens instead of ~15,000
 
 Net saving: ~12,200 tokens for downstream steps
 Cost: ~800 tokens for the distillation
-ROI: massive — especially when multiple functions follow
+ROI: massive -- especially when multiple functions follow
 ```
 
 **Recommendation:** Always use `distill()` between pride(4+) and downstream functions. Optional for pride(2-3). Lion can auto-insert it when context exceeds a threshold.
@@ -986,7 +986,7 @@ Claude (structured):  ~450 context tokens
 Gemini (narrative):   ~500 context tokens (+11%)
 Ollama (compact):     ~250 context tokens (-44%)
 
-The compact format for Ollama is not just shorter — it's also
+The compact format for Ollama is not just shorter -- it's also
 better for small models that get confused by verbose context.
 ```
 
@@ -1042,7 +1042,7 @@ Agent 1 believes: refresh tokens are not implemented (didn't verify)
 Agent 1 thinks you might miss: there's a legacy session system in auth/legacy.ts
 ```
 
-Now Agent 2 can say: "Agent 1 is correct that there's a legacy session system. I verified — it's still active for 3 routes. We need a migration strategy, not a replacement."
+Now Agent 2 can say: "Agent 1 is correct that there's a legacy session system. I verified -- it's still active for 3 routes. We need a migration strategy, not a replacement."
 
 **Token cost:** ~100-150 extra tokens per agent in rich mode. Only collected in rich mode.
 
@@ -1115,7 +1115,7 @@ WEAK DECISIONS (low agreement, low confidence):
 """
 ```
 
-**Token cost:** ~50 extra tokens per decision in the converge output. The devil prompt is ~100 tokens longer. But the devil's output is dramatically more targeted and useful — no time wasted challenging solid decisions.
+**Token cost:** ~50 extra tokens per decision in the converge output. The devil prompt is ~100 tokens longer. But the devil's output is dramatically more targeted and useful -- no time wasted challenging solid decisions.
 
 ---
 
@@ -1402,7 +1402,7 @@ WITH LAYER 2 (standard + distill):
   
   Cost increase: ~2,200 tokens (21%)  
   Context load decrease: 62%
-  Quality: best — targeted, compressed, relevant context throughout
+  Quality: best -- targeted, compressed, relevant context throughout
 
 WITH LAYER 2 (rich + context + distill + archaeology):
   archaeology:  0 LLM tokens (pure Python search)
@@ -1454,25 +1454,25 @@ Estimated effort: 2-3 hours. Low risk, high impact.
 
 ### Phase 2B: Context Functions
 
-1. **Build `context()` function** — shared mental model
-2. **Build `distill()` function** — context compression
-3. **Build `ContextBudgetManager`** — auto-distill when budget exceeded
-4. **Add context inheritance rules** — which function gets what context
+1. **Build `context()` function** -- shared mental model
+2. **Build `distill()` function** -- context compression
+3. **Build `ContextBudgetManager`** -- auto-distill when budget exceeded
+4. **Add context inheritance rules** -- which function gets what context
 
 Estimated effort: 3-4 hours. Medium complexity.
 
 ### Phase 2C: Context Adaptation
 
-1. **Build `ContextAdapter`** — format context per provider
-2. **Integrate with provider system** — adapter called before each LLM call
+1. **Build `ContextAdapter`** -- format context per provider
+2. **Integrate with provider system** -- adapter called before each LLM call
 
 Estimated effort: 1-2 hours. Only useful once multi-LLM is implemented.
 
 ### Phase 2D: Archaeology
 
-1. **Build `ContextArchaeologist`** — keyword search over run history
-2. **Integrate with pipeline start** — auto-search before pride()
-3. **Add configuration options** — enable/disable, age limits
+1. **Build `ContextArchaeologist`** -- keyword search over run history
+2. **Integrate with pipeline start** -- auto-search before pride()
+3. **Add configuration options** -- enable/disable, age limits
 
 Estimated effort: 2-3 hours. Independent of other Layer 2 features.
 

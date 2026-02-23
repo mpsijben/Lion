@@ -61,11 +61,9 @@ def _extract_files_changed(before_snapshot: set[str], after_snapshot: set[str]) 
     # Extract just the filepaths (second element of tuple)
     files = []
     for status, filepath in new_or_changed:
-        # Skip untracked files (??), we only want tracked changes
-        if status.strip() != "??":
-            files.append(filepath)
+        files.append(filepath)
 
-    return files
+    return sorted(files)
 
 IMPLEMENT_PROMPT = """Implement this plan completely.
 

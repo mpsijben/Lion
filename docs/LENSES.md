@@ -1,4 +1,4 @@
-# 🦁 LION — Lens System
+# Lion -- Lens System
 
 ## Focused Perspectives for Multi-Agent Deliberation
 
@@ -28,7 +28,7 @@
 Academic studies on role-prompting show a clear pattern:
 
 - **Vague personas have near-zero effect on accuracy.** Telling an LLM "You are a senior engineer" changes tone and jargon but not the quality of reasoning. The LLM already does its best regardless of assigned identity.
-- **Task-relevant focus instructions measurably improve output.** Telling an LLM "Analyze this code ONLY for SQL injection, XSS, and auth bypass — ignore everything else" produces dramatically better security analysis than "You are a security expert, review this code."
+- **Task-relevant focus instructions measurably improve output.** Telling an LLM "Analyze this code ONLY for SQL injection, XSS, and auth bypass -- ignore everything else" produces dramatically better security analysis than "You are a security expert, review this code."
 - **The mechanism is attention steering, not role-playing.** LLMs don't become better by pretending to be someone. They become better when their attention is constrained to a specific dimension.
 
 ### The distinction
@@ -51,7 +51,7 @@ A persona says WHO you are. A lens says WHERE you look.
 
 ### Why this matters for Lion specifically
 
-In a `pride(3)` without lenses, all 3 agents examine the same problem from roughly the same angle. This produces ~80% overlapping proposals — a waste of tokens.
+In a `pride(3)` without lenses, all 3 agents examine the same problem from roughly the same angle. This produces ~80% overlapping proposals -- a waste of tokens.
 
 With lenses, each agent examines a different dimension. Overlap drops to ~10-20%. Three agents produce three times the unique insight, in fewer total tokens.
 
@@ -148,13 +148,13 @@ pride(claude::arch, gemini::sec, codex::quick) for "Build payment API":
   Agent 2 (sec lens): "Security analysis:
     Webhook signature verification required (HMAC SHA256).
     Idempotency keys to prevent duplicate charges.
-    No PCI data in logs — mask card numbers.
+    No PCI data in logs -- mask card numbers.
     Rate limit /checkout endpoint (10/min/user).
     CSRF token for checkout form submission."
     (~400 tokens, deep on security only)
 
   Agent 3 (quick lens): "Pragmatic path:
-    Use Stripe Checkout Session — hosted page, no PCI scope.
+    Use Stripe Checkout Session -- hosted page, no PCI scope.
     Skip custom payment form entirely.
     3 files: routes/checkout.ts, services/stripe.ts, webhooks/stripe.ts.
     Use stripe CLI for local webhook testing.
@@ -283,7 +283,7 @@ What will break first under load?""",
     prompt_inject="""YOUR LENS: Pragmatic / Ship Fast
 Focus ONLY on: what is the fastest path to working, tested code?
 
-Minimize abstractions — add them later when needed, not before.
+Minimize abstractions -- add them later when needed, not before.
 Prefer standard library over external packages.
 Prefer simple over clever. Prefer working over elegant.
 Challenge any complexity that isn't paying for itself RIGHT NOW.
@@ -633,7 +633,7 @@ TASK: {task}
 {lens.prompt_inject}
 
 Other agents are analyzing from different angles.
-You do NOT need to cover everything — go DEEP on your area.
+You do NOT need to cover everything -- go DEEP on your area.
 
 Structure your response:
 
@@ -808,7 +808,7 @@ LensedContextPackage(
         "Webhook processor should be separate bounded context",
     ],
     lens_warnings=[
-        "PaymentService becoming god class — split into Checkout and Subscription",
+        "PaymentService becoming god class -- split into Checkout and Subscription",
     ],
     cross_lens_concerns=[
         "Quick agent's minimal-files approach may create coupling",
@@ -906,8 +906,8 @@ WITHOUT LENSES:
 
 WITH LENSES:
   pride propose:  1680 tokens (3 × 500 + 3 × 60 overhead)
-  pride critique: 1500 tokens (shorter — scoped to own lens)
-  pride converge: 1200 tokens (same — but richer input)
+  pride critique: 1500 tokens (shorter -- scoped to own lens)
+  pride converge: 1200 tokens (same -- but richer input)
   devil:          1000 tokens (focused on weak/contested decisions)
   review:         1000 tokens (focused on flagged areas)
   TOTAL:          6380 tokens
@@ -960,7 +960,7 @@ COMPLIANCE FEATURE:  gdpr/hipaa + sec + data
 
 **1. All soft lenses**
 ```bash
-# BAD: all three lenses are "quality of life" — no hard technical analysis
+# BAD: all three lenses are "quality of life" -- no hard technical analysis
 lion '"Build API" -> pride(claude::dx, claude::maint, claude::test_lens)'
 ```
 Problem: no one examines architecture, security, or performance. You get a pleasant, well-tested, well-documented API with potential architectural flaws and security holes.
@@ -981,13 +981,13 @@ Problem: architecture and maintainability both examine code structure and separa
 # CAREFUL: quick fundamentally conflicts with arch and sec
 lion '"Build feature" -> pride(claude::arch, claude::sec, claude::quick)'
 ```
-Not always bad — the conflict produces valuable tension. The pragmatist challenges over-engineering, and the architects challenge corner-cutting. But the converge step needs to handle conflicts well.
+Not always bad -- the conflict produces valuable tension. The pragmatist challenges over-engineering, and the architects challenge corner-cutting. But the converge step needs to handle conflicts well.
 
 **Recommendation:** This is actually a GOOD combination when you want deliberate tension. Just ensure the converge prompt knows how to resolve conflicts.
 
 **4. Too many lenses**
 ```bash
-# BAD: 6 lenses is too many — diminishing returns + token explosion
+# BAD: 6 lenses is too many -- diminishing returns + token explosion
 lion '"Build API" -> pride(claude::arch, claude::sec, claude::perf, 
                            claude::dx, claude::maint, claude::data)'
 ```
@@ -1214,7 +1214,7 @@ Step 5: review()
   → Final quality check on the actual code
 
 Result: Code that is architecturally sound (arch), secure (sec),
-  and pragmatically shipped (quick) — because each dimension
+  and pragmatically shipped (quick) -- because each dimension
   had a dedicated agent that went DEEP instead of BROAD.
 ```
 
