@@ -4,6 +4,7 @@
 default_profile = "balanced" # Changed from "premium" to "balanced"
 max_pride_size = 5
 max_retries = 3
+retry_delay = 1.0            # Base delay in seconds for retry backoff (exponential)
 max_deliberation_rounds = 1
 verbose = false
 
@@ -35,6 +36,10 @@ archaeology = true
 archaeology_max_results = 3           # Max previous runs to include
 archaeology_max_tokens = 500          # Max tokens for history context
 archaeology_max_age_days = 90         # Ignore runs older than this
+
+# LION.md project context loading
+lionmd_enabled = true                 # Load LION.md files from project hierarchy
+lionmd_max_tokens = 2000              # Max tokens for LION.md context
 
 # Auto-distill: automatically compress when budget exceeded
 auto_distill = true

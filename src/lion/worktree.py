@@ -42,6 +42,8 @@ from .memory import SharedMemory, MemoryEntry
 
 logger = logging.getLogger(__name__)
 
+CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
+
 
 def slugify(text: str) -> str:
     """Convert text to a safe branch/directory name."""
@@ -641,30 +643,69 @@ class WorktreeManager:
             Display.notify(f"[{worktree.name}] Merge conflict detected")
 
             if resolve_conflicts:
-                # Get conflict info
-                conflict_result = self._run_git(["diff", "--name-only", "--diff-filter=U"])
-                conflicted_files = conflict_result.stdout.strip().split("\n")
-
-                conflict_info = f"Conflicted files: {', '.join(conflicted_files)}"
-
-                # Try to resolve
-                resolution = resolve_conflicts(conflict_info, worktree.subtask_title)
-
-                if resolution:
-                    # Stage resolved files and complete merge
-                    self._run_git(["add", "."])
-                    result = self._run_git(["commit", "-m",
-                        f"Resolve conflicts for {worktree.branch}"])
-
-                    if result.returncode == 0:
-                        worktree.merged = True
-                        Display.notify(f"[{worktree.name}] Conflicts resolved and merged")
-                        self._log(
-                            "conflict_resolved",
-                            f"Resolved conflicts for {worktree.branch}",
-                            {"files": conflicted_files},
+                conflicted_files = self._get_conflicted_files()
+                if conflicted_files:
+                    all_resolved = True
+                    for conflicted_file in conflicted_files:
+                        file_content = self._read_text_file(
+                            os.path.join(self.cwd, conflicted_file)
                         )
-                        return True
+                        if not file_content or not self._contains_conflict_markers(
+                            file_content
+                        ):
+                            all_resolved = False
+                            break
+
+                        conflict_info = f"Conflicted file: {conflicted_file}"
+                        try:
+                            resolution = resolve_conflicts(
+                                conflict_info,
+                                worktree.subtask_title,
+                                conflict_content=file_content,
+                            )
+                        except TypeError:
+                            # Backward compatibility for 2-arg callbacks.
+                            resolution = resolve_conflicts(
+                                conflict_info,
+                                worktree.subtask_title,
+                            )
+
+                        cleaned = self._normalize_resolution_output(resolution)
+                        if (
+                            not cleaned
+                            or "CANNOT_RESOLVE" in cleaned
+                            or self._contains_conflict_markers(cleaned)
+                        ):
+                            all_resolved = False
+                            break
+
+                        if not self._write_text_file(
+                            os.path.join(self.cwd, conflicted_file), cleaned
+                        ):
+                            all_resolved = False
+                            break
+
+                        stage_result = self._run_git(["add", conflicted_file])
+                        if stage_result.returncode != 0:
+                            all_resolved = False
+                            break
+
+                    if all_resolved and not self._get_conflicted_files():
+                        result = self._run_git(
+                            ["commit", "-m", f"Resolve conflicts for {worktree.branch}"]
+                        )
+
+                        if result.returncode == 0:
+                            worktree.merged = True
+                            Display.notify(
+                                f"[{worktree.name}] Conflicts resolved and merged"
+                            )
+                            self._log(
+                                "conflict_resolved",
+                                f"Resolved conflicts for {worktree.branch}",
+                                {"files": conflicted_files},
+                            )
+                            return True
 
             # Abort the merge
             self._run_git(["merge", "--abort"])
@@ -694,6 +735,51 @@ class WorktreeManager:
             "commit", "-m",
             f"[lion] {worktree.subtask_title}\n\n{worktree.subtask_description}"
         ], cwd=worktree.path)
+
+    def _get_conflicted_files(self) -> list[str]:
+        """Return conflicted file paths in the main repo merge context."""
+        result = self._run_git(["diff", "--name-only", "--diff-filter=U"])
+        if result.returncode != 0:
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    @staticmethod
+    def _contains_conflict_markers(content: str) -> bool:
+        return any(marker in content for marker in CONFLICT_MARKERS)
+
+    @staticmethod
+    def _read_text_file(path: str) -> str:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _write_text_file(path: str, content: str) -> bool:
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _normalize_resolution_output(resolution: str | None) -> str | None:
+        """Strip fences/explanations from resolver output, keep file content only."""
+        if not resolution:
+            return None
+        cleaned = resolution.strip()
+        if not cleaned:
+            return None
+
+        fence_match = re.search(r"```(?:[a-zA-Z0-9_+-]*)\n(.*?)\n```", cleaned, re.DOTALL)
+        if fence_match:
+            cleaned = fence_match.group(1).strip()
+        elif cleaned.startswith("```") and cleaned.endswith("```"):
+            cleaned = cleaned.strip("`").strip()
+
+        return cleaned if cleaned else None
 
     def remove(self, worktree: Worktree, force: bool = False) -> bool:
         """Remove a worktree and optionally its branch.

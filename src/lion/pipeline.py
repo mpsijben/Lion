@@ -16,6 +16,8 @@ from .context import (
     ContextArchaeologist,
     detect_relevant_files,
     select_context_mode,
+    load_project_context,
+    format_for_prompt as format_lionmd_context,
 )
 from .status import QuotaTracker
 from .worktree import WorktreeManager, ConflictResolver
@@ -232,6 +234,10 @@ class PipelineExecutor:
         # Set session.auto_commit = true in config to enable per-step commits
         self._auto_commit = config.get("session", {}).get("auto_commit", False)
 
+        # Error recovery configuration
+        self._max_retries = config.get("general", {}).get("max_retries", 3)
+        self._retry_delay = config.get("general", {}).get("retry_delay", 1.0)
+
     def _expand_patterns(self, steps):
         """Expand __pattern__ meta-steps into actual steps."""
         expanded = []
@@ -375,6 +381,9 @@ class PipelineExecutor:
 
         # Initialize session tracking
         self._init_session_tracking()
+
+        # Load LION.md project context
+        self._load_lionmd_context()
 
         # Layer 2: Run archaeology to find relevant previous runs
         self._run_archaeology()
@@ -682,31 +691,106 @@ class PipelineExecutor:
         )
 
     def _execute_single_step(self, prompt, previous, step_index, step):
-        """Execute a single pipeline step and return its result, files changed, and tokens used."""
+        """Execute a single pipeline step with automatic retry on transient errors.
+
+        Implements exponential backoff retry for recoverable errors (network issues,
+        rate limits, timeouts). Non-recoverable errors (auth failures, invalid input)
+        are not retried.
+
+        Args:
+            prompt: The pipeline prompt
+            previous: Output from previous steps
+            step_index: Current step index (0-based)
+            step: The PipelineStep to execute
+
+        Returns:
+            Tuple of (step_result, files_changed, tokens_used)
+        """
         func = FUNCTIONS.get(step.function)
         if not func:
             self.errors.append(f"Unknown function: {step.function}")
             Display.step_error(step.function, "Unknown function")
             return {"success": False, "error": "Unknown function"}, [], 0
 
-        try:
-            step_result = func(
-                prompt=prompt,
-                previous=previous,
-                step=step,
-                memory=self.memory,
-                config=self.config,
-                cwd=self.cwd,
-                cost_manager=self.cost_manager,
-            )
-            new_files_changed = step_result.get("files_changed", [])
-            new_tokens_used = step_result.get("tokens_used", 0)
-            return step_result, new_files_changed, new_tokens_used
+        # Errors that should trigger retry
+        retryable_errors = (
+            "rate limit",
+            "ratelimit",
+            "rate_limit",
+            "timeout",
+            "connection",
+            "temporarily unavailable",
+            "overloaded",
+            "capacity",
+            "resource_exhausted",
+            "model_capacity_exhausted",
+            "no capacity available",
+            "500",
+            "502",
+            "503",
+            "504",
+            "429",
+        )
 
-        except Exception as e:
-            self.errors.append(f"{step.function}: {str(e)}")
-            Display.step_error(step.function, str(e))
-            return {"success": False, "error": str(e)}, [], 0
+        last_error = None
+
+        for attempt in range(self._max_retries):
+            try:
+                step_result = func(
+                    prompt=prompt,
+                    previous=previous,
+                    step=step,
+                    memory=self.memory,
+                    config=self.config,
+                    cwd=self.cwd,
+                    cost_manager=self.cost_manager,
+                )
+                new_files_changed = step_result.get("files_changed", [])
+                new_tokens_used = step_result.get("tokens_used", 0)
+                return step_result, new_files_changed, new_tokens_used
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+
+                # Check if this is a retryable error
+                is_retryable = any(
+                    indicator in error_str for indicator in retryable_errors
+                )
+
+                if is_retryable and attempt < self._max_retries - 1:
+                    # Calculate backoff delay: base * 2^attempt
+                    delay = self._retry_delay * (2 ** attempt)
+                    Display.notify(
+                        f"{step.function}: Transient error, retrying in {delay:.1f}s "
+                        f"(attempt {attempt + 1}/{self._max_retries})"
+                    )
+
+                    # Log retry attempt to memory
+                    self.memory.write(MemoryEntry(
+                        timestamp=time.time(),
+                        phase="recovery",
+                        agent="error_handler",
+                        type="retry",
+                        content=f"Retrying {step.function} after error: {str(e)[:200]}",
+                        metadata={
+                            "attempt": attempt + 1,
+                            "max_retries": self._max_retries,
+                            "delay": delay,
+                        }
+                    ))
+
+                    time.sleep(delay)
+                    continue
+                else:
+                    # Non-retryable error or max retries reached
+                    break
+
+        # All retries exhausted or non-retryable error
+        error_msg = str(last_error)
+        self.errors.append(f"{step.function}: {error_msg}")
+        Display.step_error(step.function, error_msg)
+        return {"success": False, "error": error_msg}, [], 0
 
     def _find_last_producer(self, current_idx):
         """Find the last producer step before current_idx.
@@ -1307,6 +1391,46 @@ class PipelineExecutor:
             "tokens_used": result.tokens_used,
             "files_changed": [],
         }
+
+    def _load_lionmd_context(self):
+        """Load LION.md project context and inject into memory.
+
+        LION.md files provide project-specific instructions that should be
+        followed by all agents. Context is loaded from the directory hierarchy
+        (project root to cwd) and injected as the first memory entry.
+        """
+        context_config = self.config.get("context", {})
+
+        # Check if LION.md loading is enabled (default: True)
+        if not context_config.get("lionmd_enabled", True):
+            return
+
+        try:
+            lionmd_context = load_project_context(self.cwd)
+
+            if lionmd_context:
+                # Format for prompt injection
+                max_tokens = context_config.get("lionmd_max_tokens", 2000)
+                formatted = format_lionmd_context(lionmd_context, max_tokens)
+
+                # Inject into memory as first entry
+                self.memory.write(MemoryEntry(
+                    timestamp=time.time(),
+                    phase="context",
+                    agent="lionmd_loader",
+                    type="project_context",
+                    content=formatted,
+                    metadata={
+                        "source": "LION.md",
+                        "char_count": len(lionmd_context),
+                    }
+                ))
+
+                Display.notify("Loaded project context from LION.md")
+
+        except Exception as e:
+            # LION.md loading is best-effort, don't fail the pipeline
+            Display.step_error("context", f"LION.md load failed: {str(e)}")
 
     def _run_archaeology(self):
         """Search previous runs for relevant context (Layer 2).

@@ -329,6 +329,74 @@ class TestWorktreeManagerMerge:
         # Verify file exists in main repo
         assert os.path.exists(os.path.join(manager.cwd, "feature.py"))
 
+    def test_merge_conflict_auto_resolve_success(self, manager_with_changes):
+        manager, wt = manager_with_changes
+
+        # Create same file differently on main and worktree to force conflict.
+        shared_main = os.path.join(manager.cwd, "shared.txt")
+        with open(shared_main, "w", encoding="utf-8") as f:
+            f.write("main version\n")
+        subprocess.run(["git", "add", "shared.txt"], cwd=manager.cwd, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Main change"],
+            cwd=manager.cwd,
+            capture_output=True,
+        )
+
+        shared_wt = os.path.join(wt.path, "shared.txt")
+        with open(shared_wt, "w", encoding="utf-8") as f:
+            f.write("worktree version\n")
+        subprocess.run(["git", "add", "shared.txt"], cwd=wt.path, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Worktree change"],
+            cwd=wt.path,
+            capture_output=True,
+        )
+
+        def resolver(_conflict_info, _task_title, conflict_content=None):
+            assert conflict_content is not None
+            return "resolved version\n"
+
+        result = manager.merge(wt, resolve_conflicts=resolver)
+
+        assert result is True
+        assert wt.merged is True
+        with open(shared_main, "r", encoding="utf-8") as f:
+            assert f.read() == "resolved version"
+
+    def test_merge_conflict_auto_resolve_failure_aborts(self, manager_with_changes):
+        manager, wt = manager_with_changes
+
+        shared_main = os.path.join(manager.cwd, "conflict.txt")
+        with open(shared_main, "w", encoding="utf-8") as f:
+            f.write("main version\n")
+        subprocess.run(["git", "add", "conflict.txt"], cwd=manager.cwd, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Main conflict change"],
+            cwd=manager.cwd,
+            capture_output=True,
+        )
+
+        shared_wt = os.path.join(wt.path, "conflict.txt")
+        with open(shared_wt, "w", encoding="utf-8") as f:
+            f.write("worktree version\n")
+        subprocess.run(["git", "add", "conflict.txt"], cwd=wt.path, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Worktree conflict change"],
+            cwd=wt.path,
+            capture_output=True,
+        )
+
+        def unresolved(_conflict_info, _task_title, conflict_content=None):
+            assert conflict_content is not None
+            return "CANNOT_RESOLVE"
+
+        result = manager.merge(wt, resolve_conflicts=unresolved)
+
+        assert result is False
+        assert wt.merged is False
+        assert wt.error == "Merge conflict - manual resolution required"
+
 
 class TestWorktreeManagerRemove:
     """Tests for WorktreeManager.remove()."""

@@ -24,6 +24,7 @@ except ImportError:
 from .session import SessionState
 from .commands import handle_command, COMMANDS, cmd_cycle_verbosity, cmd_context_toggle
 from .views import ViewRenderer
+from .autocomplete import get_pipeline_completions_simple
 
 
 # Special escape sequences for keyboard shortcuts in interactive mode
@@ -76,45 +77,93 @@ def validate_pipeline(input_str: str, config: dict) -> tuple[bool, str, str, lis
     Returns:
         Tuple of (valid, error_message, prompt, steps)
     """
+    from .autocomplete import _get_available_functions
+
     # Basic validation before parsing
     input_str = input_str.strip()
 
     if not input_str:
         return False, "Empty input", "", []
 
-    # Check for unclosed quotes
+    # Check for unclosed quotes with position info
     quote_char = None
-    for char in input_str:
+    quote_pos = 0
+    for i, char in enumerate(input_str):
         if char in ('"', "'"):
             if quote_char is None:
                 quote_char = char
+                quote_pos = i
             elif char == quote_char:
                 quote_char = None
 
     if quote_char:
-        return False, f"Unclosed quote: {quote_char}", "", []
+        # Show context around the unclosed quote
+        context_start = max(0, quote_pos - 5)
+        context_end = min(len(input_str), quote_pos + 15)
+        context = input_str[context_start:context_end]
+        marker = " " * (quote_pos - context_start) + "^"
+        return False, f"Unclosed {quote_char} quote at position {quote_pos + 1}:\n  {context}\n  {marker}", "", []
 
-    # Check for unclosed parentheses
+    # Check for unclosed parentheses with position info
     paren_count = 0
-    for char in input_str:
+    open_positions = []
+    for i, char in enumerate(input_str):
         if char == "(":
             paren_count += 1
+            open_positions.append(i)
         elif char == ")":
+            if paren_count <= 0:
+                # Show context around the unmatched close paren
+                context_start = max(0, i - 10)
+                context_end = min(len(input_str), i + 5)
+                context = input_str[context_start:context_end]
+                marker = " " * (i - context_start) + "^"
+                return False, f"Unmatched ')' at position {i + 1}:\n  {context}\n  {marker}", "", []
             paren_count -= 1
-        if paren_count < 0:
-            return False, "Unmatched closing parenthesis", "", []
+            open_positions.pop()
 
     if paren_count > 0:
-        return False, f"Unclosed parenthesis ({paren_count} open)", "", []
+        # Show the first unclosed paren
+        pos = open_positions[0]
+        context_start = max(0, pos - 5)
+        context_end = min(len(input_str), pos + 20)
+        context = input_str[context_start:context_end]
+        marker = " " * (pos - context_start) + "^"
+        return False, f"Unclosed '(' at position {pos + 1} ({paren_count} unclosed):\n  {context}\n  {marker}", "", []
 
     # Try to parse
     try:
         prompt, steps = parse_lion_input(input_str, config)
         if not prompt:
-            return False, "Could not extract prompt from input", "", []
+            # Give a hint about expected format
+            return False, "Could not extract prompt. Expected: \"your prompt\" -> function()", "", []
+
+        # Validate function names
+        available_funcs = set(_get_available_functions())
+        for step in steps:
+            if step.function != "__pattern__" and step.function not in available_funcs:
+                similar = [f for f in available_funcs if f.startswith(step.function[:2])]
+                hint = f" Did you mean: {', '.join(similar[:3])}?" if similar else ""
+                return False, f"Unknown function '{step.function}'.{hint}\nAvailable: {', '.join(sorted(available_funcs)[:10])}...", "", []
+
         return True, "", prompt, steps
     except Exception as e:
-        return False, f"Parse error: {str(e)}", "", []
+        error_msg = str(e)
+        # Try to provide more context for common errors
+        if "invalid syntax" in error_msg.lower():
+            return False, f"Syntax error: {error_msg}\nExpected format: \"prompt\" -> function() -> function()", "", []
+        return False, f"Parse error: {error_msg}", "", []
+
+
+def _should_use_tui(steps) -> bool:
+    """Decide whether to launch the Textual TUI for this pipeline."""
+    if not sys.stdout.isatty():
+        return False
+    try:
+        from .tui import LionApp  # noqa: F401
+        return len(steps) > 0
+    except ImportError:
+        return False
 
 
 def execute_pipeline(session: SessionState, input_str: str) -> None:
@@ -166,6 +215,45 @@ def execute_pipeline(session: SessionState, input_str: str) -> None:
         cwd=str(session.cwd),
     )
 
+    # Launch TUI if available and interactive
+    if _should_use_tui(steps) and getattr(session, "tui_mode", True):
+        _run_with_tui(session, prompt, steps, config, run_dir, executor, input_str)
+        return
+
+    # Fallback: line-based output (batch mode or no textual)
+    _run_line_mode(session, executor, run_dir, input_str)
+
+
+def _run_with_tui(session, prompt, steps, config, run_dir, executor, input_str):
+    """Launch the Textual TUI for pipeline execution."""
+    from .tui import LionApp
+
+    app = LionApp(
+        prompt=prompt,
+        steps=steps,
+        config=config,
+        run_dir=str(run_dir),
+        executor=lambda: executor.run(),
+    )
+
+    try:
+        app.run()
+    except Exception as e:
+        if session.debug_mode:
+            traceback.print_exc()
+        else:
+            print(f"{RED}TUI error: {e}{RESET}")
+            print(f"{DIM}Falling back to line mode...{RESET}")
+            _run_line_mode(session, executor, run_dir, input_str)
+            return
+
+    # Load the run into session for inspection after TUI exits
+    session.load_run(run_dir)
+    session.history.append(input_str)
+
+
+def _run_line_mode(session, executor, run_dir, input_str):
+    """Execute pipeline with line-based output (original behavior)."""
     try:
         result = executor.run()
 
@@ -200,6 +288,30 @@ def execute_pipeline(session: SessionState, input_str: str) -> None:
             print(f"{DIM}Use :debug on for full traceback.{RESET}")
 
 
+def _is_fuzzy_match(query: str, candidate: str) -> bool:
+    """Check if query characters appear in order within candidate."""
+    if not query:
+        return True
+
+    it = iter(candidate)
+    return all(ch in it for ch in query)
+
+
+def get_command_completions(text: str) -> list[str]:
+    """Return command completion candidates for readline."""
+    if not text.startswith(":"):
+        return []
+
+    cmd_prefix = text[1:].lower()
+    all_commands = sorted(set(COMMANDS.keys()))
+    prefixed = [f":{cmd}" for cmd in all_commands if cmd.startswith(cmd_prefix)]
+    prefixed_set = {m[1:] for m in prefixed}
+
+    # Keep prefix matches first; add fuzzy matches as fallback.
+    fuzzy = [f":{cmd}" for cmd in all_commands if cmd not in prefixed_set and _is_fuzzy_match(cmd_prefix, cmd)]
+    return prefixed + fuzzy
+
+
 def setup_readline():
     """Configure readline for command history and completion."""
     if not HAS_READLINE:
@@ -226,17 +338,34 @@ def setup_readline():
     # Set history length
     readline.set_history_length(1000)
 
-    # Basic completion for commands
+    # Combined completion for :commands and pipeline syntax
+    _completion_cache = {"text": None, "matches": []}
+
     def completer(text, state):
-        if text.startswith(":"):
-            cmd_prefix = text[1:]
-            matches = [f":{cmd}" for cmd in COMMANDS.keys() if cmd.startswith(cmd_prefix)]
-            if state < len(matches):
-                return matches[state]
+        # Cache completions for the same text (readline calls multiple times)
+        line_buffer = readline.get_line_buffer() if readline else text
+
+        if _completion_cache["text"] != line_buffer:
+            _completion_cache["text"] = line_buffer
+
+            # Determine what to complete based on context
+            if line_buffer.lstrip().startswith(":"):
+                # Command completion
+                _completion_cache["matches"] = get_command_completions(line_buffer)
+            else:
+                # Pipeline completion
+                _completion_cache["matches"] = get_pipeline_completions_simple(line_buffer)
+
+        matches = _completion_cache["matches"]
+        if state < len(matches):
+            return matches[state]
         return None
 
     readline.set_completer(completer)
+    # Use complete for tab, allow partial word completion
     readline.parse_and_bind("tab: complete")
+    # Set word delimiters to not include common pipeline characters
+    readline.set_completer_delims(" \t\n;")  # Keep only whitespace and semicolon
 
 
 def setup_interactive_keybindings():

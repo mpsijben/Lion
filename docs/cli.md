@@ -2505,28 +2505,28 @@ The lead now knows you use PostgreSQL + SQLAlchemy, so it won't pick MongoDB. Th
 ## Roadmap
 
 ### v0.1 -- pair() + TUI foundation
-- [ ] REPL with prompt_toolkit + context-aware autocomplete
-- [ ] Parser: prompt + pipeline splitting on `->`
-- [ ] StreamInterceptor for Claude, Gemini, Codex
-- [ ] pair() loop with interrupt/resume
-- [ ] TUI: pipeline sidebar + active step panel
-- [ ] TUI: streaming code output with syntax highlighting
-- [ ] TUI: eye status widgets (checking/clean/finding)
-- [ ] TUI: interrupt boxes
-- [ ] TUI: Tab navigation between steps
-- [ ] TUI: command mode (`:`) with autocomplete
-- [ ] TUI: `: inject` -- manual correction to lead
-- [ ] TUI: `: add`/`: remove` -- add/remove steps
-- [ ] TUI: `: eyes add`/`: eyes remove` -- hot-swap eyes
-- [ ] TUI: `: pause`/`: resume`/`: abort` -- flow control
-- [ ] TUI: file tracker + diff view (`f` and `d` keys)
-- [ ] Git: WorktreeManager -- worktree per session
-- [ ] Git: auto-commit per step with hash tracking
-- [ ] Git: squash merge on `pr` step
-- [ ] LION.md project context loading
-- [ ] Config via ~/.lion/config.toml
-- [ ] Command history
-- [ ] Error recovery: auto-retry on crash
+- [x] REPL with prompt_toolkit + context-aware autocomplete
+- [x] Parser: prompt + pipeline splitting on `->`
+- [x] StreamInterceptor for Claude, Gemini, Codex
+- [x] pair() loop with interrupt/resume
+- [x] TUI: pipeline sidebar + active step panel
+- [x] TUI: streaming code output with syntax highlighting
+- [x] TUI: eye status widgets (checking/clean/finding)
+- [x] TUI: interrupt boxes
+- [x] TUI: Tab navigation between steps
+- [x] TUI: command mode (`:`) with autocomplete
+- [x] TUI: `: inject` -- manual correction to lead
+- [x] TUI: `: add`/`: remove` -- add/remove steps
+- [x] TUI: `: eyes add`/`: eyes remove` -- hot-swap eyes
+- [x] TUI: `: pause`/`: resume`/`: abort` -- flow control
+- [x] TUI: file tracker + diff view (`f` and `d` keys)
+- [x] Git: WorktreeManager -- worktree per session
+- [x] Git: auto-commit per step with hash tracking
+- [x] Git: squash merge on `pr` step
+- [x] LION.md project context loading
+- [x] Config via ~/.lion/config.toml
+- [x] Command history
+- [x] Error recovery: auto-retry on crash
 
 ### v0.2 -- pipeline primitives + templates
 - [ ] `test` primitive (pytest/npm test, output in panel)
@@ -2552,7 +2552,7 @@ The lead now knows you use PostgreSQL + SQLAlchemy, so it won't pick MongoDB. Th
 - [ ] Worktree auto-cleanup after 24h
 
 ### v0.4 -- polish + advanced
-- [ ] Fuzzy matching in autocomplete
+- [x] Fuzzy matching in autocomplete
 - [ ] Headless mode for CI/CD
 - [ ] Custom lenses via config
 - [ ] Benchmark mode: `lion --benchmark "task"`

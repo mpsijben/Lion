@@ -65,10 +65,14 @@ Output ONLY the PR body in markdown format.
 def execute_pr(prompt, previous, step, memory, config, cwd, cost_manager=None):
     """Create git branch, commit changes, and optionally create PR.
 
+    Supports squash merge mode: combines all session commits into a single commit
+    when the session had auto_commit enabled with multiple steps.
+
     Args:
         prompt: The original user prompt
         previous: Dict with output from previous steps
         step: The PipelineStep with function name and args (branch name)
+              Optional kwarg: squash=True to squash all session commits
         memory: SharedMemory instance for logging
         config: Lion configuration dict
         cwd: Working directory
@@ -129,6 +133,20 @@ def execute_pr(prompt, previous, step, memory, config, cwd, cost_manager=None):
             }
 
     Display.notify(f"Created branch: {branch_name}")
+
+    # Check if squash mode is requested
+    squash_mode = step.kwargs.get("squash", False)
+
+    # Get base commit for squash (session base or first commit on this branch)
+    base_commit = previous.get("_session_base_commit")
+
+    if squash_mode and base_commit:
+        # Squash all commits since base into a single commit
+        success, squash_error = _squash_commits(base_commit, cwd)
+        if success:
+            Display.notify("Squashed all session commits into one")
+        else:
+            Display.notify(f"Squash skipped: {squash_error}")
 
     # Stage all changes
     _stage_all(cwd)
@@ -466,3 +484,77 @@ def _clean_commit_message(message: str) -> str:
         message = "\n".join(lines)
 
     return message
+
+
+def _squash_commits(base_commit: str, cwd: str) -> tuple[bool, str]:
+    """Squash all commits since base_commit into the staging area.
+
+    Uses soft reset to preserve changes while removing intermediate commits.
+    The caller is responsible for creating a new commit afterward.
+
+    Args:
+        base_commit: The commit hash to squash back to
+        cwd: Working directory
+
+    Returns:
+        Tuple of (success, error_message)
+    """
+    # Verify base commit exists
+    result = subprocess.run(
+        ["git", "cat-file", "-t", base_commit],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False, f"Base commit {base_commit[:8]} not found"
+
+    # Count commits to squash
+    result = subprocess.run(
+        ["git", "rev-list", "--count", f"{base_commit}..HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False, "Could not count commits"
+
+    commit_count = int(result.stdout.strip())
+    if commit_count <= 1:
+        return False, "Only 1 commit, nothing to squash"
+
+    # Soft reset to base commit (keeps all changes staged)
+    result = subprocess.run(
+        ["git", "reset", "--soft", base_commit],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False, f"Reset failed: {result.stderr}"
+
+    return True, ""
+
+
+def _get_session_commits(base_commit: str, cwd: str) -> list[str]:
+    """Get list of commit messages since base_commit.
+
+    Useful for generating a squash commit message that summarizes all changes.
+
+    Args:
+        base_commit: The commit hash to start from
+        cwd: Working directory
+
+    Returns:
+        List of commit messages
+    """
+    result = subprocess.run(
+        ["git", "log", "--oneline", f"{base_commit}..HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+
+    return [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]

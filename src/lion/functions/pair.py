@@ -664,6 +664,7 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
             new_lines = chunk.text.count("\n")
             total_lines += new_lines
             lines_since_check += new_lines
+            Display.pair_lead_chunk(lead_model, chunk.text)
 
             # Collect preflight findings on first code output
             if not preflight_collected and total_lines > 0 and preflight is not None:
@@ -779,6 +780,7 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
                 lead.resume(correction)
                 for chunk in lead.chunks():
                     lead_output += chunk.text
+                    Display.pair_lead_chunk(lead_model, chunk.text)
             else:
                 Display.pair_clean(len(eyes))
                 break

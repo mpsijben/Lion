@@ -15,6 +15,7 @@ from .parser import parse_context_package, extract_sections, parse_list, estimat
 from .adapter import ContextAdapter
 from .budget import ContextBudgetManager, select_context_mode
 from .archaeology import ContextArchaeologist, detect_relevant_files
+from .lionmd import LionMdLoader, load_project_context, format_for_prompt
 from .prompts import (
     PROPOSE_PROMPT_MINIMAL,
     PROPOSE_PROMPT_STANDARD,
@@ -51,6 +52,10 @@ __all__ = [
     # Archaeology
     "ContextArchaeologist",
     "detect_relevant_files",
+    # LION.md context
+    "LionMdLoader",
+    "load_project_context",
+    "format_for_prompt",
     # Prompts
     "PROPOSE_PROMPT_MINIMAL",
     "PROPOSE_PROMPT_STANDARD",
