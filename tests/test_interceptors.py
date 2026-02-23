@@ -141,7 +141,12 @@ class TestGeminiInterceptor:
     def test_build_command_initial(self):
         gi = GeminiInterceptor()
         cmd = gi.build_command("Write code", resume=False)
-        assert cmd == ["gemini", "-o", "json", "-p", "Write code"]
+        assert cmd == ["gemini", "-o", "stream-json", "-p", "Write code"]
+
+    def test_build_command_with_model(self):
+        gi = GeminiInterceptor(model_hint="flash")
+        cmd = gi.build_command("Write code", resume=False)
+        assert cmd == ["gemini", "-o", "stream-json", "-m", "gemini-2.5-flash", "-p", "Write code"]
 
     def test_build_command_resume(self):
         gi = GeminiInterceptor()

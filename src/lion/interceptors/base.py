@@ -24,6 +24,7 @@ class Chunk:
     raw: str
     timestamp: float
     stream: str
+    kind: str = "code"  # "code" or "thinking"
 
 
 @dataclass
@@ -33,6 +34,10 @@ class StreamStats:
     started_at: float | None = None
     ended_at: float | None = None
     errors: list[str] = field(default_factory=list)
+    # Token usage captured from provider result events
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
 
     @property
     def ttft_ms(self) -> int | None:
@@ -51,8 +56,9 @@ class StreamInterceptor:
 
     name = "base"
 
-    def __init__(self, cwd: str = ".") -> None:
+    def __init__(self, cwd: str = ".", model_hint: str | None = None) -> None:
         self.cwd = cwd
+        self.model_hint = model_hint
         self.session_id: str | None = None
         self.stats = StreamStats()
         self._proc: subprocess.Popen[str] | None = None
@@ -74,6 +80,13 @@ class StreamInterceptor:
     def start(self, prompt: str, resume: bool = False) -> None:
         if self._proc and self._proc.poll() is None:
             raise RuntimeError(f"{self.name} process already running")
+
+        # Drain stale data from previous run
+        while not self._q.empty():
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
 
         self.stats = StreamStats(started_at=time.time())
         self._terminated_intentionally = False
@@ -119,13 +132,18 @@ class StreamInterceptor:
             try:
                 stream_name, line = self._q.get(timeout=poll_interval)
             except queue.Empty:
-                if self._proc.poll() is not None and self._q.empty():
-                    break
+                if self._proc.poll() is not None:
+                    # Process exited -- wait for pump threads to finish
+                    # so all output is queued before we check for empty.
+                    for t in self._threads:
+                        t.join(timeout=2)
+                    if self._q.empty():
+                        break
                 continue
 
             if line == "__EOF__":
                 eof_count += 1
-                if eof_count >= 2 and self._proc.poll() is not None and self._q.empty():
+                if eof_count >= 2 and self._q.empty():
                     break
                 continue
 
@@ -168,8 +186,9 @@ class StreamInterceptor:
         self.start(correction, resume=True)
 
     @staticmethod
-    def _chunk(source: str, text: str, raw: str, stream: str) -> Chunk:
+    def _chunk(source: str, text: str, raw: str, stream: str,
+               kind: str = "code") -> Chunk:
         return Chunk(
             source=source, text=text, raw=raw,
-            timestamp=time.time(), stream=stream,
+            timestamp=time.time(), stream=stream, kind=kind,
         )

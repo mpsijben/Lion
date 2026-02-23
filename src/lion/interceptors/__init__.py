@@ -22,11 +22,14 @@ INTERCEPTORS = {
 def get_interceptor(name: str, cwd: str = ".") -> StreamInterceptor:
     """Get an interceptor by provider name.
 
-    Accepts "claude", "gemini", "codex" or dotted forms like "claude.opus"
-    (the part after the dot is ignored here -- model selection is handled
-    by the interceptor's build_command).
+    Accepts "claude", "gemini", "codex" or dotted forms like "claude.opus",
+    "gemini.flash". The part after the dot is passed as model_hint to the
+    interceptor for CLI-level model selection.
     """
-    provider_name = name.split(".", 1)[0].lower()
+    parts = name.split(".", 1)
+    provider_name = parts[0].lower()
+    model_hint = parts[1] if len(parts) > 1 else None
+
     cls = INTERCEPTORS.get(provider_name)
     if cls is None:
         available = ", ".join(INTERCEPTORS.keys())
@@ -39,7 +42,7 @@ def get_interceptor(name: str, cwd: str = ".") -> StreamInterceptor:
             f"CLI '{cli_name}' not found in PATH. "
             f"Install it or check your PATH to use {provider_name} as interceptor."
         )
-    return cls(cwd=cwd)
+    return cls(cwd=cwd, model_hint=model_hint)
 
 
 __all__ = [

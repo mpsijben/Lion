@@ -44,11 +44,19 @@ arch = _register(
 Focus ONLY on: system design, separation of concerns, dependency
 direction, interface boundaries, module cohesion, and scaling patterns.
 
-IGNORE: variable naming, code style, test coverage, security specifics,
-and implementation details. If the architecture is sound but the code
-is ugly, say the architecture is sound.
+SEVERITY FILTER: Only report issues that would cause REAL problems --
+bugs, runtime failures, data loss, or blocking scaling to 10x users.
+Do NOT report theoretical purity issues like "should use a port/protocol"
+or "dependency direction could be cleaner" unless it actively prevents
+the code from working or being extended for a concrete requirement.
+A working monolith is fine. Imperfect module boundaries are fine.
+Only flag architecture that is genuinely broken or blocking.
 
-Go deep. Other agents cover other dimensions.""",
+IGNORE: variable naming, code style, test coverage, security specifics,
+and implementation details. If the architecture works and can be
+reasonably extended, say it's sound.
+
+Go deep on real problems. Skip theoretical improvements.""",
         critique_inject="""Review other proposals ONLY from an architecture perspective.
 Does their approach have clean boundaries? Will it scale? Are dependencies pointing
 the right direction? Do NOT critique their security or style choices.""",
@@ -89,10 +97,17 @@ Focus ONLY on: time complexity, database query efficiency (N+1 queries,
 missing indexes, full table scans), memory allocation, caching opportunities,
 connection pooling, and scaling bottlenecks.
 
-IGNORE: code readability, security, naming conventions, test coverage.
-If the code is unreadable but fast, say it's fast.
+SEVERITY FILTER: Only report issues that would cause REAL performance
+problems at realistic scale -- actual O(n^2) algorithms on large data,
+actual memory leaks, actual missing indexes on frequently queried tables.
+Do NOT report micro-optimizations like "list comprehension allocates
+a temporary list" or "dict lookup could be O(1) instead of O(n) for n<100".
+A few extra list scans over 10-50 items is fine. Small allocations are fine.
+Only flag performance issues that would cause measurable user-facing
+slowdowns or resource exhaustion at realistic production scale.
 
-Think in terms of: what happens at 10x and 100x current load?""",
+IGNORE: code readability, security, naming conventions, test coverage.
+If the code is unreadable but fast, say it's fast.""",
         critique_inject="""Review other proposals ONLY for performance implications.
 Will their architecture create bottlenecks? Are there unnecessary round trips?
 What will break first under load?""",

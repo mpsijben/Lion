@@ -6,7 +6,9 @@ from unittest.mock import patch, MagicMock
 
 from lion.functions.pair import (
     Finding,
+    EyeResult,
     EyeConfig,
+    _EyeChecker,
     _parse_eyes,
     _build_eye_prompt,
     _check_eye,
@@ -133,16 +135,17 @@ class TestBuildEyePrompt:
 
 
 class TestCheckEye:
-    def test_returns_none_on_clean(self):
+    def test_clean_response(self):
         lens = get_lens("sec")
         eye = EyeConfig(
             lens_name="sec", lens=lens,
             provider="mock", interceptor=MockInterceptor("NONE"),
         )
         result = _check_eye(eye, "def hello(): pass")
-        assert result is None
+        assert result.status == "clean"
+        assert result.finding is None
 
-    def test_returns_finding_on_issue(self):
+    def test_finding_response(self):
         lens = get_lens("sec")
         eye = EyeConfig(
             lens_name="sec", lens=lens,
@@ -150,13 +153,14 @@ class TestCheckEye:
             interceptor=MockInterceptor("SQL injection in login query"),
         )
         result = _check_eye(eye, "db.execute('SELECT * FROM users WHERE id=' + id)")
-        assert result is not None
-        assert isinstance(result, Finding)
-        assert result.lens == "sec"
-        assert "SQL injection" in result.description
-        assert result.eye_name == "mock:sec"
+        assert result.status == "finding"
+        assert result.finding is not None
+        assert isinstance(result.finding, Finding)
+        assert result.finding.lens == "sec"
+        assert "SQL injection" in result.finding.description
+        assert result.finding.eye_name == "mock:sec"
 
-    def test_returns_none_when_none_in_response(self):
+    def test_none_in_longer_response(self):
         lens = get_lens("arch")
         eye = EyeConfig(
             lens_name="arch", lens=lens,
@@ -164,7 +168,20 @@ class TestCheckEye:
             interceptor=MockInterceptor("NONE - code looks clean"),
         )
         result = _check_eye(eye, "class Good: pass")
-        assert result is None
+        assert result.status == "clean"
+        assert result.finding is None
+
+    def test_empty_response(self):
+        """Empty or whitespace-only response should be status 'empty'."""
+        lens = get_lens("sec")
+        for empty in ["", " ", "  \n  ", "\t"]:
+            eye = EyeConfig(
+                lens_name="sec", lens=lens,
+                provider="mock", interceptor=MockInterceptor(empty),
+            )
+            result = _check_eye(eye, "some code")
+            assert result.status == "empty", f"Expected 'empty' for response {empty!r}"
+            assert result.finding is None
 
 
 class TestCheckEyesParallel:
@@ -284,6 +301,82 @@ class TestPairRegistration:
         assert FUNCTIONS["pair"] is execute_pair
 
 
+class TestEyeChecker:
+    """Tests for _EyeChecker background thread with streaming findings."""
+
+    def _make_eyes(self, *responses):
+        """Create eye configs with mock interceptors returning given responses."""
+        lenses = ["sec", "arch", "perf"]
+        eyes = []
+        for i, resp in enumerate(responses):
+            lens_name = lenses[i % len(lenses)]
+            eyes.append(EyeConfig(
+                lens_name=lens_name,
+                lens=get_lens(lens_name),
+                provider="mock",
+                interceptor=MockInterceptor(resp),
+            ))
+        return eyes
+
+    def test_poll_returns_none_when_idle(self):
+        """poll() returns None when no check has been submitted."""
+        checker = _EyeChecker(self._make_eyes("NONE"))
+        assert checker.poll() is None
+
+    def test_not_busy_initially(self):
+        checker = _EyeChecker(self._make_eyes("NONE"))
+        assert not checker.busy
+
+    def test_submit_streams_finding(self):
+        """A finding arrives via poll() after eyes complete."""
+        checker = _EyeChecker(self._make_eyes("SQL injection found"))
+        checker.submit("some code")
+        findings = checker.drain()
+        assert len(findings) == 1
+        assert "SQL injection" in findings[0].description
+
+    def test_clean_eyes_produce_no_findings(self):
+        """When all eyes return NONE, drain returns empty list."""
+        checker = _EyeChecker(self._make_eyes("NONE", "NONE"))
+        checker.submit("clean code")
+        findings = checker.drain()
+        assert findings == []
+
+    def test_drain_collects_all_findings(self):
+        """drain() waits and returns all findings as a list."""
+        checker = _EyeChecker(self._make_eyes(
+            "SQL injection", "Bad architecture"
+        ))
+        checker.submit("code")
+        findings = checker.drain()
+        assert len(findings) == 2
+
+    def test_drain_empty_on_clean(self):
+        checker = _EyeChecker(self._make_eyes("NONE"))
+        checker.submit("code")
+        findings = checker.drain()
+        assert findings == []
+
+    def test_not_busy_after_drain(self):
+        """busy is False after all eyes complete."""
+        checker = _EyeChecker(self._make_eyes("NONE"))
+        checker.submit("code")
+        checker.drain()
+        assert not checker.busy
+
+    def test_multiple_sequential_submits(self):
+        """Can submit multiple checks sequentially."""
+        checker = _EyeChecker(self._make_eyes("NONE"))
+
+        checker.submit("code 1")
+        findings1 = checker.drain()
+        assert findings1 == []
+
+        checker.submit("code 2")
+        findings2 = checker.drain()
+        assert findings2 == []
+
+
 class TestExecutePair:
     """Integration tests for execute_pair with mocked interceptors."""
 
@@ -303,7 +396,7 @@ class TestExecutePair:
     def _make_config(self):
         return {
             "providers": {"default": "claude"},
-            "pair": {"check_every_n_lines": 5, "max_interrupts": 3},
+            "pair": {"first_check_lines": 3, "check_every_n_lines": 5, "max_interrupts": 3},
         }
 
     @patch("lion.functions.pair.get_interceptor")

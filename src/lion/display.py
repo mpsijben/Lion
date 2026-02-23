@@ -146,16 +146,18 @@ class Display:
         _print(f"   +-- {GREEN}Consensus:{RESET} {DIM}{preview_clean}...{RESET}")
 
     @staticmethod
-    def step_start(num, total, step):
+    def step_start(num, total, step, concurrent=False):
         args_str = ", ".join(str(a) for a in step.args) if step.args else ""
-        _print(f"\n   [{num}/{total}] {BOLD}{step.function}({args_str}){RESET}")
+        prefix = f"{DIM}||{RESET} " if concurrent else ""
+        _print(f"\n   {prefix}[{num}/{total}] {BOLD}{step.function}({args_str}){RESET}")
 
     @staticmethod
-    def step_complete(func_name, result):
-        _print(f"   {GREEN}v{RESET} {func_name} complete")
+    def step_complete(func_name, result, concurrent=False):
+        prefix = f"{DIM}||{RESET} " if concurrent else ""
+        _print(f"   {prefix}{GREEN}v{RESET} {func_name} complete")
 
     @staticmethod
-    def step_summary(func_name, result):
+    def step_summary(func_name, result, concurrent=False):
         """Show a brief summary of a step's output."""
         # Show issue counts for review/devil/lint/typecheck
         critical = result.get("critical_count", 0)
@@ -261,12 +263,36 @@ class Display:
         _print(f"   {DIM}[LEAD:{lead_name}] {preview}{RESET}")
 
     @staticmethod
+    def pair_preflight_started(num_eyes, thinking_lines=0):
+        if thinking_lines:
+            _print(f"   {DIM}[PREFLIGHT] started {num_eyes} eye(s) with {thinking_lines} lines of thinking{RESET}")
+        else:
+            _print(f"   {DIM}[PREFLIGHT] started {num_eyes} eye(s) on task analysis{RESET}")
+
+    @staticmethod
+    def pair_preflight_finding(eye_name, lens, description, latency):
+        _print(f"   {MAGENTA}[PREFLIGHT:{eye_name}] [{lens}] {description} ({latency:.1f}s){RESET}")
+
+    @staticmethod
+    def pair_preflight_clean():
+        _print(f"   {GREEN}v{RESET} preflight clean")
+
+    @staticmethod
+    def pair_check_submitted(check_num, total_lines, elapsed):
+        _print(f"   {DIM}[CHECK #{check_num}] submitted at line {total_lines} ({elapsed:.0f}s){RESET}")
+
+    @staticmethod
     def pair_finding(eye_name, lens, description, latency):
         _print(f"   {YELLOW}[EYE:{eye_name}] [{lens}] {description} ({latency:.1f}s){RESET}")
 
     @staticmethod
-    def pair_interrupt(count, total_findings):
-        _print(f"   {RED}>>> INTERRUPT #{count}: {total_findings} finding(s), resuming with correction...{RESET}")
+    def pair_interrupt(count, total_findings, preflight=False):
+        label = "PREFLIGHT INTERRUPT" if preflight else "INTERRUPT"
+        _print(f"   {RED}>>> {label} #{count}: {total_findings} finding(s), resuming with correction...{RESET}")
+
+    @staticmethod
+    def pair_eye_error(eye_name, error):
+        _print(f"   {DIM}[EYE:{eye_name}] {error}{RESET}")
 
     @staticmethod
     def pair_clean(num_eyes):
@@ -276,7 +302,90 @@ class Display:
     def pair_complete(interrupts, wall_clock, lines):
         _print(f"   {GREEN}v{RESET} pair complete: {interrupts} interrupt(s), {lines} lines, {wall_clock:.1f}s")
 
+    @staticmethod
+    def pair_usage(lead_usage, eye_usage_list, total_tokens, total_cost):
+        lead_in = lead_usage.get("input_tokens", 0)
+        lead_out = lead_usage.get("output_tokens", 0)
+        lines = [f"   {DIM}usage: lead: {lead_in:,}in/{lead_out:,}out"]
+        # Aggregate per-eye agent
+        eye_totals = {}
+        for eu in eye_usage_list:
+            name = eu.get("agent", "?")
+            if name not in eye_totals:
+                eye_totals[name] = {"in": 0, "out": 0, "cost": 0.0}
+            eye_totals[name]["in"] += eu.get("input_tokens", 0)
+            eye_totals[name]["out"] += eu.get("output_tokens", 0)
+            eye_totals[name]["cost"] += eu.get("cost_usd", 0.0)
+        for name, t in eye_totals.items():
+            lines.append(f"          {name}: {t['in']:,}in/{t['out']:,}out")
+        cost_str = f"${total_cost:.4f}" if total_cost > 0 else f"{total_tokens:,} tokens"
+        lines.append(f"          total: {total_tokens:,} tokens - {cost_str}{RESET}")
+        _print("\n".join(lines))
+
     # ── end pair() display ────────────────────────────────────────
+
+    # ── worktree display methods ───────────────────────────────────
+
+    @staticmethod
+    def worktree_created(name, branch, path):
+        _print(f"   {GREEN}+{RESET} worktree created: {CYAN}{branch}{RESET}")
+        _print(f"   {DIM}  path: {path}{RESET}")
+
+    @staticmethod
+    def worktree_status(name, status, detail=""):
+        icons = {
+            "running": f"{BLUE}\u25b6{RESET}",      # play
+            "testing": f"{YELLOW}\u25b6{RESET}",   # play yellow
+            "passed": f"{GREEN}v{RESET}",
+            "failed": f"{RED}x{RESET}",
+            "merging": f"{MAGENTA}\u2192{RESET}",  # arrow
+            "merged": f"{GREEN}v{RESET}",
+            "conflict": f"{RED}!{RESET}",
+            "removed": f"{DIM}-{RESET}",
+        }
+        icon = icons.get(status, ">")
+        if detail:
+            _print(f"   {icon} [{name}] {status}: {detail}")
+        else:
+            _print(f"   {icon} [{name}] {status}")
+
+    @staticmethod
+    def worktree_tests(name, passed, duration=None):
+        if passed:
+            dur_str = f" ({duration:.1f}s)" if duration else ""
+            _print(f"   {GREEN}v{RESET} [{name}] tests passed{dur_str}")
+        else:
+            _print(f"   {RED}x{RESET} [{name}] tests failed")
+
+    @staticmethod
+    def worktree_merge(name, branch, success, conflict=False):
+        if success:
+            _print(f"   {GREEN}v{RESET} [{name}] merged {CYAN}{branch}{RESET}")
+        elif conflict:
+            _print(f"   {YELLOW}!{RESET} [{name}] merge conflict for {CYAN}{branch}{RESET}")
+        else:
+            _print(f"   {RED}x{RESET} [{name}] merge failed for {CYAN}{branch}{RESET}")
+
+    @staticmethod
+    def worktree_conflict_resolved(name, branch):
+        _print(f"   {GREEN}v{RESET} [{name}] conflict resolved for {CYAN}{branch}{RESET}")
+
+    @staticmethod
+    def worktree_cleanup(count):
+        _print(f"   {DIM}cleaned up {count} worktree(s){RESET}")
+
+    @staticmethod
+    def worktree_summary(total, passed, merged, errors):
+        _print(f"\n   {BOLD}Worktree Summary:{RESET}")
+        _print(f"   - Total: {total}")
+        if passed > 0:
+            _print(f"   - Tests passed: {GREEN}{passed}{RESET}")
+        if merged > 0:
+            _print(f"   - Merged: {GREEN}{merged}{RESET}")
+        if errors > 0:
+            _print(f"   - Errors: {RED}{errors}{RESET}")
+
+    # ── end worktree display ───────────────────────────────────────
 
     @staticmethod
     def cancelled():

@@ -42,8 +42,11 @@ distill_provider = "gemini"           # Use cheap provider for compression
 
 # Pair programming configuration (for pair() function)
 [pair]
-check_every_n_lines = 20    # Check eyes every N lines of lead output
+first_check_lines = 5      # Submit first eye check after N lines (early start)
+check_every_n_lines = 10   # Check eyes every N lines of lead output after first
 max_interrupts = 10         # Max interrupt/resume cycles before finishing
+max_final_rounds = 3        # Max re-check rounds after lead finishes (loop until clean)
+preflight_thinking_lines = 20  # Start preflight after N lines of thinking output (or N*80 chars)
 
 # Self-healing configuration (for ^ operator)
 [self_healing]

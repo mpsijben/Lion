@@ -16,6 +16,7 @@ from .context import (
     detect_relevant_files,
     select_context_mode,
 )
+from .worktree import WorktreeManager, ConflictResolver
 
 # Functions that produce code (call implement(), write files to disk)
 PRODUCER_FUNCTIONS = {"pride", "impl", "test"}
@@ -846,19 +847,117 @@ class PipelineExecutor:
 
     def _run_subtasks_parallel(self, subtasks, remaining_steps,
                                previous_output, task_indices):
-        """Run independent subtasks in parallel."""
+        """Run independent subtasks in parallel using git worktrees.
+
+        Each subtask runs in an isolated worktree to prevent file conflicts.
+        After completion, tests are run and successful worktrees are merged.
+        """
+        use_worktrees = self.config.get("worktrees", {}).get("enabled", True)
+        max_workers = self.config.get("worktrees", {}).get("max_workers", 5)
+
+        if not use_worktrees:
+            # Fall back to original parallel execution (shared cwd)
+            self._run_subtasks_parallel_shared(
+                subtasks, remaining_steps, previous_output, task_indices
+            )
+            return
+
+        Display.notify(
+            f"Running {len(subtasks)} independent subtasks in parallel "
+            f"(isolated worktrees)..."
+        )
+
+        # Initialize worktree manager
+        try:
+            worktree_manager = WorktreeManager(
+                cwd=self.cwd,
+                memory=self.memory,
+            )
+        except ValueError as e:
+            Display.step_error("worktree", f"Cannot use worktrees: {e}")
+            # Fall back to shared execution
+            self._run_subtasks_parallel_shared(
+                subtasks, remaining_steps, previous_output, task_indices
+            )
+            return
+
+        # Create worktrees for each subtask
+        worktrees = worktree_manager.create_for_subtasks(subtasks)
+
+        if not worktrees:
+            Display.step_error("worktree", "No worktrees created, falling back")
+            self._run_subtasks_parallel_shared(
+                subtasks, remaining_steps, previous_output, task_indices
+            )
+            return
+
+        # Build index map for O(1) lookup instead of O(n) list.index()
+        task_idx_to_subtask = {
+            task_idx: subtasks[i]
+            for i, task_idx in enumerate(task_indices)
+        }
+
+        # Run subtasks in parallel, each in its own worktree
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(worktrees), max_workers)
+        ) as executor:
+            futures = {}
+            for wt, task_idx in zip(worktrees, task_indices):
+                subtask = task_idx_to_subtask[task_idx]
+                future = executor.submit(
+                    self._run_single_subtask_in_worktree,
+                    subtask,
+                    task_idx + 1,
+                    len(subtasks),
+                    remaining_steps,
+                    previous_output,
+                    wt,
+                )
+                futures[future] = (task_idx, wt)
+
+            for future in concurrent.futures.as_completed(futures):
+                task_idx, wt = futures[future]
+                try:
+                    future.result()
+                    wt.completed = True
+                except Exception as e:
+                    wt.error = str(e)
+                    self.errors.append(
+                        f"Subtask {task_idx + 1} failed: {str(e)}"
+                    )
+                    Display.step_error(
+                        "task", f"Subtask {task_idx + 1}: {str(e)}"
+                    )
+
+        # Test and merge phase
+        self._test_and_merge_worktrees(worktree_manager, worktrees)
+
+        # Cleanup
+        worktree_manager.cleanup_all()
+
+        # Show summary
+        status = worktree_manager.get_status(include_details=False)
+        Display.worktree_summary(
+            status["total"],
+            status["tests_passed"],
+            status["merged"],
+            status["errors"],
+        )
+
+    def _run_subtasks_parallel_shared(self, subtasks, remaining_steps,
+                                      previous_output, task_indices):
+        """Run subtasks in parallel with shared cwd (original behavior)."""
+        max_workers = self.config.get("worktrees", {}).get("max_workers", 5)
 
         Display.notify(
             f"Running {len(subtasks)} independent subtasks in parallel..."
         )
 
         with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(len(subtasks), 3)
+            max_workers=min(len(subtasks), max_workers)
         ) as executor:
             futures = {}
-            for i, (subtask, task_idx) in enumerate(
-                zip(subtasks, task_indices)
-            ):
+            for subtask, task_idx in zip(subtasks, task_indices):
                 future = executor.submit(
                     self._run_single_subtask,
                     subtask,
@@ -880,6 +979,141 @@ class PipelineExecutor:
                     Display.step_error(
                         "task", f"Subtask {task_idx + 1}: {str(e)}"
                     )
+
+    def _run_single_subtask_in_worktree(self, subtask, task_num, total_tasks,
+                                        remaining_steps, previous_output,
+                                        worktree):
+        """Run pipeline steps for a subtask in its isolated worktree."""
+        title = subtask.get("title", f"Subtask {task_num}")
+        description = subtask.get("description", "")
+
+        # Set thread-local task label
+        task_label = f"Task {task_num}/{total_tasks}"
+        Display.set_task_label(task_label)
+
+        Display.worktree_status(worktree.name, "running", title)
+
+        # Build the subtask prompt
+        subtask_prompt = (
+            f"{self.prompt}\n\n"
+            f"FOCUS ON THIS SPECIFIC SUBTASK:\n"
+            f"Task {task_num}: {title}\n"
+            f"{description}\n"
+        )
+        if subtask.get("files"):
+            subtask_prompt += f"Files: {', '.join(subtask['files'])}\n"
+
+        # Use mutable dict to avoid repeated full copies
+        subtask_previous = dict(previous_output)
+
+        for j, step in enumerate(remaining_steps):
+            Display.step_start(j + 1, len(remaining_steps), step)
+
+            func = FUNCTIONS.get(step.function)
+            if not func:
+                self.errors.append(f"Unknown function: {step.function}")
+                Display.step_error(step.function, "Unknown function")
+                continue
+
+            try:
+                # Use worktree path as cwd
+                step_result = func(
+                    prompt=subtask_prompt,
+                    previous=subtask_previous,
+                    step=step,
+                    memory=self.memory,
+                    config=self.config,
+                    cwd=worktree.path,  # Isolated worktree
+                    cost_manager=self.cost_manager,
+                )
+
+                self.outputs.append(step_result)
+                self.total_tokens += step_result.get("tokens_used", 0)
+                self.files_changed.extend(
+                    step_result.get("files_changed", [])
+                )
+
+                if step_result.get("agent_summaries"):
+                    self.agent_summaries = step_result["agent_summaries"]
+                if step_result.get("final_decision"):
+                    self.final_decision = step_result["final_decision"]
+
+                # Update in-place to avoid repeated full-dict copies
+                subtask_previous.update(step_result)
+
+                self.steps_completed += 1
+                Display.step_complete(step.function, step_result)
+                Display.step_summary(step.function, step_result)
+
+            except Exception as e:
+                self.errors.append(
+                    f"Subtask {task_num} - {step.function}: {str(e)}"
+                )
+                Display.step_error(step.function, str(e))
+                raise
+
+        Display.worktree_status(worktree.name, "passed", f"{title} complete")
+        Display.set_task_label(None)
+
+    def _test_and_merge_worktrees(self, manager, worktrees):
+        """Run tests in each worktree and merge successful ones.
+
+        Tests run in parallel, but merges are sequential to avoid git conflicts.
+        """
+        test_command = self.config.get("worktrees", {}).get("test_command")
+        max_workers = self.config.get("worktrees", {}).get("max_workers", 5)
+
+        # Pre-create shared provider and resolver for reuse
+        provider = get_provider(
+            self.config.get("providers", {}).get("default", "claude"),
+            self.config,
+        )
+        resolver = ConflictResolver(
+            provider=provider,
+            cwd=self.cwd,
+            memory=self.memory,
+        )
+
+        def resolve_conflicts(conflict_info, task_title):
+            return resolver.resolve(conflict_info, task_title)
+
+        # Filter out errored worktrees
+        valid_worktrees = [wt for wt in worktrees if not wt.error]
+        errored_worktrees = [wt for wt in worktrees if wt.error]
+
+        for wt in errored_worktrees:
+            Display.worktree_status(wt.name, "failed", wt.error[:100])
+
+        # Run tests in parallel
+        def run_test(wt):
+            Display.worktree_status(wt.name, "testing")
+            passed = manager.run_tests(wt, test_command=test_command)
+            if passed:
+                Display.worktree_tests(wt.name, passed=True)
+            else:
+                Display.worktree_tests(wt.name, passed=False)
+            return wt, passed
+
+        passed_worktrees = []
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(valid_worktrees), max_workers) if valid_worktrees else 1
+        ) as executor:
+            futures = {executor.submit(run_test, wt): wt for wt in valid_worktrees}
+            for future in concurrent.futures.as_completed(futures):
+                wt, passed = future.result()
+                if passed:
+                    passed_worktrees.append(wt)
+
+        # Merges must be sequential to avoid git lock conflicts
+        for wt in passed_worktrees:
+            Display.worktree_status(wt.name, "merging")
+            if manager.merge(wt, resolve_conflicts=resolve_conflicts):
+                Display.worktree_merge(wt.name, wt.branch, success=True)
+            else:
+                Display.worktree_merge(
+                    wt.name, wt.branch, success=False,
+                    conflict=bool(wt.error and "conflict" in wt.error.lower())
+                )
 
     def _run_single_agent(self) -> dict:
         """Run a single agent without pipeline (for simple tasks)."""
