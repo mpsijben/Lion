@@ -19,6 +19,7 @@ from .context import (
 )
 from .status import QuotaTracker
 from .worktree import WorktreeManager, ConflictResolver
+from .session import SessionManager, Session
 
 # Functions that produce code (call implement(), write files to disk)
 PRODUCER_FUNCTIONS = {"pride", "impl", "test"}
@@ -194,7 +195,7 @@ def _build_dependency_levels(subtasks):
 
 
 class PipelineExecutor:
-    def __init__(self, prompt, steps, config, run_dir, cwd, cost_manager=None):
+    def __init__(self, prompt, steps, config, run_dir, cwd, cost_manager=None, session_tracking=True):
         self.prompt = prompt
         self.steps = self._expand_patterns(steps)
         self.config = config
@@ -221,6 +222,16 @@ class PipelineExecutor:
         self._quota_tracker = QuotaTracker(config)
         set_quota_recorder(self._quota_tracker.record_usage)
 
+        # Session tracking for history and resume
+        self.session_tracking = session_tracking and config.get("session", {}).get("enabled", True)
+        self.session: Session | None = None
+        self.session_manager: SessionManager | None = None
+        self._worktree_manager: WorktreeManager | None = None
+
+        # Auto-commit configuration: defaults to False to avoid polluting git history
+        # Set session.auto_commit = true in config to enable per-step commits
+        self._auto_commit = config.get("session", {}).get("auto_commit", False)
+
     def _expand_patterns(self, steps):
         """Expand __pattern__ meta-steps into actual steps."""
         expanded = []
@@ -230,6 +241,123 @@ class PipelineExecutor:
             else:
                 expanded.append(step)
         return expanded
+
+    def _init_session_tracking(self) -> None:
+        """Initialize session tracking if enabled."""
+        if not self.session_tracking:
+            return
+
+        try:
+            # Pass auto_commit setting to session manager
+            self.session_manager = SessionManager(
+                auto_commit=self._auto_commit,
+                sync_directory=self.config.get("session", {}).get("sync_directory", False),
+            )
+
+            # Get base commit hash
+            base_commit = None
+            try:
+                self._worktree_manager = WorktreeManager(cwd=self.cwd, memory=self.memory)
+                base_commit = self._worktree_manager.get_current_commit_hash(self.cwd)
+            except (ValueError, OSError):
+                # Not a git repo or git not available
+                pass
+
+            # Build pipeline string representation
+            pipeline_str = " -> ".join(
+                f"{s.function}({', '.join(str(a) for a in s.args)})"
+                if s.args else s.function + "()"
+                for s in self.steps
+            ) if self.steps else "(single agent)"
+
+            self.session = self.session_manager.create_session(
+                prompt=self.prompt,
+                pipeline=pipeline_str,
+                cwd=self.cwd,
+                base_commit=base_commit,
+            )
+        except Exception:
+            # Session tracking is best-effort - don't fail the pipeline
+            self.session_tracking = False
+
+    def _record_step_start(self, step_index: int, step) -> None:
+        """Record step start in session (if tracking enabled)."""
+        if not self.session_tracking or not self.session:
+            return
+        try:
+            self.session_manager.record_step_start(
+                self.session,
+                step_number=step_index + 1,
+                function_name=step.function,
+                persist=False,  # Don't persist start - wait for completion
+            )
+        except Exception:
+            pass  # Best-effort
+
+    def _record_step_complete(
+        self, step_index: int, files_changed: list[str], tokens_used: int
+    ) -> None:
+        """Record step completion with optional auto-commit.
+
+        Auto-commit behavior is controlled by the session.auto_commit config
+        setting (defaults to False to avoid polluting git history).
+
+        When auto_commit is disabled, steps are still recorded but without
+        commit hashes. This allows session history and resume functionality
+        based on step order rather than git commits.
+        """
+        if not self.session_tracking or not self.session:
+            return
+
+        try:
+            step_number = step_index + 1
+            commit_hash = None
+
+            # Only auto-commit if explicitly enabled AND files were modified
+            # This prevents commit pollution when running many pipelines
+            if self._auto_commit and files_changed and self._worktree_manager:
+                step = self.session.get_step(step_number)
+                func_name = step.function_name if step else "unknown"
+                commit_msg = f"[lion] step {step_number}: {func_name}"
+                # create_commit returns None if there were no actual changes
+                # (e.g., all files already committed) - this is expected
+                commit_hash = self._worktree_manager.create_commit(commit_msg, cwd=self.cwd)
+
+            self.session_manager.record_step_complete(
+                self.session,
+                step_number=step_number,
+                commit_hash=commit_hash,
+                files_changed=files_changed,
+                tokens_used=tokens_used,
+                persist=True,
+            )
+        except Exception:
+            pass  # Best-effort
+
+    def _record_step_failed(self, step_index: int, error: str) -> None:
+        """Record step failure in session (if tracking enabled)."""
+        if not self.session_tracking or not self.session:
+            return
+        try:
+            self.session_manager.record_step_failed(
+                self.session,
+                step_number=step_index + 1,
+                error=error,
+                persist=True,
+            )
+        except Exception:
+            pass  # Best-effort
+
+    def _complete_session(self, success: bool, error: str | None = None) -> None:
+        """Complete the session (if tracking enabled)."""
+        if not self.session_tracking or not self.session:
+            return
+        try:
+            self.session_manager.complete_session(self.session, success=success, error=error)
+            # Prune old sessions periodically (uses configured limits)
+            self.session_manager.prune_sessions()
+        except Exception:
+            pass  # Best-effort
 
     def run(self) -> PipelineResult:
         """Execute the full pipeline."""
@@ -245,6 +373,9 @@ class PipelineExecutor:
 
         Display.pipeline_start(self.prompt, self.steps)
 
+        # Initialize session tracking
+        self._init_session_tracking()
+
         # Layer 2: Run archaeology to find relevant previous runs
         self._run_archaeology()
 
@@ -252,8 +383,10 @@ class PipelineExecutor:
         if not self.steps:
             result = self._run_single_agent()
             content = result.get("content", "")
+            success = result.get("success", False)
+            self._complete_session(success=success)
             return PipelineResult(
-                success=result.get("success", False),
+                success=success,
                 prompt=self.prompt,
                 steps_completed=1,
                 total_steps=1,
@@ -271,6 +404,8 @@ class PipelineExecutor:
         if unknown:
             for name in unknown:
                 Display.step_error(name, f"Unknown function '{name}'")
+            error_msg = f"Unknown function(s): {', '.join(unknown)}"
+            self._complete_session(success=False, error=error_msg)
             return PipelineResult(
                 success=False,
                 prompt=self.prompt,
@@ -302,6 +437,7 @@ class PipelineExecutor:
                 # Single step block (sequential execution)
                 i, step = block[0]
                 Display.step_start(i + 1, len(self.steps), step)
+                self._record_step_start(i, step)
                 try:
                     step_result, new_files_changed, new_tokens_used = self._execute_single_step(
                         prompt=self.prompt,
@@ -402,16 +538,19 @@ class PipelineExecutor:
                     # Only count as completed if step was successful
                     if step_result.get("success", True):
                         self.steps_completed += 1
+                        self._record_step_complete(i, new_files_changed, new_tokens_used)
                         Display.step_complete(step.function, step_result)
                         Display.step_summary(step.function, step_result)
                     else:
                         # Step failed internally - still add error and break
                         error_msg = step_result.get("error", "Step failed")
+                        self._record_step_failed(i, error_msg)
                         if f"{step.function}:" not in " ".join(self.errors):
                             self.errors.append(f"{step.function}: {error_msg}")
                         break
 
                 except Exception as e:
+                    self._record_step_failed(i, str(e))
                     self.errors.append(f"{step.function}: {str(e)}")
                     Display.step_error(step.function, str(e))
                     break # Break out of block loop
@@ -433,6 +572,7 @@ class PipelineExecutor:
                     )
                     for i, step in block:
                         Display.step_start(i + 1, len(self.steps), step)
+                        self._record_step_start(i, step)
                         try:
                             step_result, new_files_changed, new_tokens_used = self._execute_single_step(
                                 prompt=self.prompt,
@@ -451,20 +591,25 @@ class PipelineExecutor:
 
                             previous_output = {**previous_output, **step_result}
                             self.steps_completed += 1
+                            self._record_step_complete(i, new_files_changed, new_tokens_used)
                             Display.step_complete(step.function, step_result)
                             Display.step_summary(step.function, step_result)
 
                         except Exception as e:
+                            self._record_step_failed(i, str(e))
                             self.errors.append(f"{step.function}: {str(e)}")
                             Display.step_error(step.function, str(e))
                             break
                     continue  # Skip the parallel execution block below
 
                 Display.phase("concurrent", f"Executing {len(block)} steps concurrently...")
-                with concurrent.futures.ThreadPoolExecutor(max_workers=len(block)) as executor:
+                # Cap max_workers to avoid excessive thread spawning
+                max_concurrent = min(len(block), self.config.get("max_concurrent_steps", 8))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
                     futures = {}
                     for i, step in block:
                         Display.step_start(i + 1, len(self.steps), step, concurrent=True)
+                        self._record_step_start(i, step)
                         futures[executor.submit(
                             self._execute_single_step,
                             prompt=self.prompt,
@@ -472,7 +617,7 @@ class PipelineExecutor:
                             step_index=i,
                             step=step,
                         )] = (i, step)
-                    
+
                     block_results = []
                     for future in concurrent.futures.as_completed(futures):
                         i, step = futures[future]
@@ -489,12 +634,21 @@ class PipelineExecutor:
                             if step_result.get("final_decision"):
                                 # If multiple parallel steps produce final_decision, only keep the last one
                                 self.final_decision = step_result["final_decision"]
-                            
-                            self.steps_completed += 1
-                            Display.step_complete(step.function, step_result, concurrent=True)
-                            Display.step_summary(step.function, step_result, concurrent=True)
+
+                            # Check if step actually succeeded
+                            if step_result.get("success", True):
+                                self.steps_completed += 1
+                                self._record_step_complete(i, new_files_changed, new_tokens_used)
+                                Display.step_complete(step.function, step_result, concurrent=True)
+                                Display.step_summary(step.function, step_result, concurrent=True)
+                            else:
+                                error_msg = step_result.get("error", "Step failed")
+                                self._record_step_failed(i, error_msg)
+                                self.errors.append(f"{step.function}: {error_msg}")
+                                Display.step_error(step.function, error_msg, concurrent=True)
 
                         except Exception as e:
+                            self._record_step_failed(i, str(e))
                             self.errors.append(f"{step.function}: {str(e)}")
                             Display.step_error(step.function, str(e), concurrent=True)
 
@@ -506,8 +660,15 @@ class PipelineExecutor:
             if self.errors:
                 break # Break out of main block loop if any error occurred
 
+        # Complete session tracking
+        success = len(self.errors) == 0
+        self._complete_session(
+            success=success,
+            error=self.errors[0] if self.errors else None,
+        )
+
         return PipelineResult(
-            success=len(self.errors) == 0,
+            success=success,
             prompt=self.prompt,
             steps_completed=self.steps_completed,
             total_steps=len(self.steps),
@@ -1088,8 +1249,12 @@ class PipelineExecutor:
             memory=self.memory,
         )
 
-        def resolve_conflicts(conflict_info, task_title):
-            return resolver.resolve(conflict_info, task_title)
+        def resolve_conflicts(conflict_info, task_title, conflict_content=None):
+            return resolver.resolve(
+                conflict_info,
+                task_title,
+                conflict_content=conflict_content,
+            )
 
         # Filter out errored worktrees
         valid_worktrees = [wt for wt in worktrees if not wt.error]

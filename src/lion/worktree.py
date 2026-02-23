@@ -26,6 +26,7 @@ Usage:
     manager.cleanup_all()
 """
 
+import logging
 import os
 import re
 import shutil
@@ -38,6 +39,8 @@ from typing import Callable
 
 from .display import Display
 from .memory import SharedMemory, MemoryEntry
+
+logger = logging.getLogger(__name__)
 
 
 def slugify(text: str) -> str:
@@ -162,6 +165,222 @@ class WorktreeManager:
             return result.stdout.strip()[:12]
         except Exception:
             return "HEAD"
+
+    def get_current_commit_hash(self, cwd: str | None = None) -> str | None:
+        """Get the current commit hash (full SHA).
+
+        Args:
+            cwd: Working directory (default: self.cwd)
+
+        Returns:
+            Full commit hash or None if not in a git repo
+        """
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=cwd or self.cwd,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            return None
+        except Exception:
+            return None
+
+    def create_from_hash(
+        self,
+        commit_hash: str,
+        branch_name: str,
+        worktree_name: str | None = None,
+    ) -> Worktree:
+        """Create a worktree from a specific commit hash.
+
+        Used for session resume to start from a known state.
+
+        Args:
+            commit_hash: Git commit hash to start from
+            branch_name: Name for the new branch
+            worktree_name: Name for the worktree directory (default: branch_name)
+
+        Returns:
+            Worktree object
+
+        Raises:
+            RuntimeError: If commit doesn't exist or worktree creation fails
+        """
+        # Verify commit exists
+        result = self._run_git(["cat-file", "-t", commit_hash])
+        if result.returncode != 0:
+            raise RuntimeError(f"Commit {commit_hash} does not exist")
+
+        # Clean up branch name
+        if not branch_name.startswith("lion/"):
+            branch_name = f"lion/{branch_name}"
+
+        wt_name = worktree_name or slugify(branch_name.replace("lion/", ""))
+        path = os.path.join(self.base_dir, f"lion-{wt_name}")
+
+        # Ensure path doesn't exist
+        if os.path.exists(path):
+            shutil.rmtree(path)
+
+        # Create the worktree with a new branch from the commit
+        result = self._run_git([
+            "worktree", "add",
+            "-b", branch_name,
+            path,
+            commit_hash,
+        ])
+
+        if result.returncode != 0:
+            error = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(f"Failed to create worktree from hash: {error}")
+
+        worktree = Worktree(
+            path=path,
+            branch=branch_name,
+            subtask_title=f"Resume from {commit_hash[:8]}",
+            subtask_index=len(self.worktrees) + 1,
+        )
+
+        self.worktrees.append(worktree)
+
+        self._log(
+            "worktree_from_hash",
+            f"Created worktree from commit {commit_hash[:8]} at {path}",
+            {"branch": branch_name, "path": path, "commit": commit_hash},
+        )
+
+        Display.notify(f"Created worktree from {commit_hash[:8]}: {branch_name}")
+
+        return worktree
+
+    def has_uncommitted_changes(self, cwd: str | None = None) -> bool:
+        """Check if there are uncommitted changes in the working directory.
+
+        Args:
+            cwd: Working directory to check (default: self.cwd)
+
+        Returns:
+            True if there are uncommitted changes
+        """
+        result = self._run_git(["status", "--porcelain"], cwd=cwd or self.cwd)
+        return bool(result.stdout.strip())
+
+    def reset_to_step(
+        self,
+        session,  # Session object from session.py
+        step_number: int,
+        branch_name: str | None = None,
+        force: bool = False,
+    ) -> Worktree | None:
+        """Create a worktree reset to a specific session step.
+
+        Used for resuming a session from a specific point. This creates a
+        NEW worktree rather than modifying the current working directory,
+        which is safer as it preserves any local changes.
+
+        Args:
+            session: Session object with step history
+            step_number: Step number to reset to (1-based), or 0 for base commit
+            branch_name: Name for the new branch (default: auto-generated)
+            force: If True, skip uncommitted changes check. Default False.
+
+        Returns:
+            Worktree object or None if step doesn't have a commit hash
+
+        Raises:
+            ValueError: If there are uncommitted changes and force=False
+        """
+        # Safety check: warn about uncommitted changes in current directory
+        # Note: We create a worktree (not reset current dir), so this is
+        # just a warning to help users not lose track of their work
+        if not force and self.has_uncommitted_changes():
+            Display.notify(
+                "Warning: Current directory has uncommitted changes. "
+                "These will NOT be affected (new worktree is created)."
+            )
+
+        # Get the commit hash for the step
+        commit_hash = session.get_commit_at_step(step_number)
+
+        if not commit_hash:
+            # Try to use base commit if step 0 (before any steps)
+            if step_number == 0 and session.base_commit:
+                commit_hash = session.base_commit
+            else:
+                Display.step_error(
+                    "worktree",
+                    f"Step {step_number} has no commit hash recorded"
+                )
+                return None
+
+        # Generate branch name using short_id for readability
+        if not branch_name:
+            short_id = getattr(session, 'short_id', session.session_id[:8])
+            branch_name = f"lion/resume-{short_id}-step{step_number}"
+
+        try:
+            short_id = getattr(session, 'short_id', session.session_id[:8])
+            return self.create_from_hash(
+                commit_hash=commit_hash,
+                branch_name=branch_name,
+                worktree_name=f"resume-{short_id}-step{step_number}",
+            )
+        except RuntimeError as e:
+            Display.step_error("worktree", str(e))
+            return None
+
+    def create_commit(
+        self,
+        message: str,
+        cwd: str | None = None,
+    ) -> str | None:
+        """Create a commit with all staged and unstaged changes.
+
+        Used by pipeline to auto-commit after each step. Only creates a
+        commit if there are actual changes to commit.
+
+        Args:
+            message: Commit message
+            cwd: Working directory (default: self.cwd)
+
+        Returns:
+            Commit hash of the newly created commit, or None if:
+            - No changes to commit
+            - Commit failed for any reason
+            - Repository is in a state that prevents committing
+
+        Note:
+            Returns the actual commit hash created, NOT HEAD (which could
+            be different if the user made manual commits during the step).
+        """
+        work_dir = cwd or self.cwd
+
+        # Check for changes (staged or unstaged)
+        result = self._run_git(["status", "--porcelain"], cwd=work_dir)
+        if not result.stdout.strip():
+            # No changes to commit - this is normal for steps that
+            # only read/analyze code without modifying files
+            return None
+
+        # Stage all changes
+        result = self._run_git(["add", "-A"], cwd=work_dir)
+        if result.returncode != 0:
+            logger.warning("git add failed: %s", result.stderr)
+            return None
+
+        # Create commit and capture the hash directly from the output
+        result = self._run_git(["commit", "-m", message], cwd=work_dir)
+        if result.returncode != 0:
+            # Commit failed - could be pre-commit hook, empty commit, etc.
+            logger.warning("git commit failed: %s", result.stderr)
+            return None
+
+        # Get the hash of the commit we just created
+        # Use rev-parse HEAD which gives us the actual commit just made
+        return self.get_current_commit_hash(cwd=work_dir)
 
     def _log(self, event_type: str, content: str, metadata: dict | None = None):
         """Log to memory if available."""
