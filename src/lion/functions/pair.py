@@ -14,7 +14,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
-from ..interceptors import get_interceptor, StreamInterceptor
+from ..interceptors import (
+    ClaudeLiveInterceptor,
+    CodexAppServerInterceptor,
+    GeminiACPInterceptor,
+    InterceptorCapabilities,
+    StreamInterceptor,
+    get_interceptor,
+)
 from ..lenses import get_lens, Lens
 from ..lenses.auto_assign import auto_assign_lenses
 from ..memory import MemoryEntry
@@ -114,6 +121,16 @@ Do NOT report these again -- only report NEW issues not covered below:
 {previous_findings}
 """
 
+NON_ACTIONABLE_PATTERNS = (
+    "need to see the complete code",
+    "snippet is incomplete",
+    "please share the complete code",
+    "please share complete code",
+    "cannot provide a proper security review",
+    "can't provide a proper security review",
+    "not enough context",
+)
+
 
 PREFLIGHT_PROMPT = """You are a code reviewer catching issues BEFORE code is written.
 
@@ -155,6 +172,11 @@ def _build_eye_prompt(
         code=code[-8000:],  # last 8000 chars to stay within context limits
         previous_findings_section=previous_section,
     )
+
+
+def _is_non_actionable_review(text: str) -> bool:
+    lowered = text.lower()
+    return any(pattern in lowered for pattern in NON_ACTIONABLE_PATTERNS)
 
 
 def _build_preflight_prompt(lens: Lens, task: str, thinking: str = "") -> str:
@@ -241,6 +263,13 @@ def _check_eye(
         )
 
     if "NONE" in response.upper():
+        return EyeResult(
+            eye_name=eye.name, finding=None,
+            status="clean", latency=latency, usage=eye_usage,
+        )
+
+    # Filter non-actionable "need more context" responses that create noisy loops.
+    if _is_non_actionable_review(cleaned):
         return EyeResult(
             eye_name=eye.name, finding=None,
             status="clean", latency=latency, usage=eye_usage,
@@ -511,6 +540,105 @@ def _build_lead_prompt(prompt: str, previous: dict) -> str:
     return LEAD_PROMPT.format(prompt=prompt, plan_section=plan_section)
 
 
+_VALID_PAIR_MODES = {"auto", "interrupt", "wait", "steer"}
+
+
+def _resolve_pair_mode(
+    requested_mode: str, capabilities: InterceptorCapabilities
+) -> str:
+    """Resolve requested mode to an executable mode for this interceptor path."""
+    mode = (requested_mode or "auto").strip().lower()
+    if mode not in _VALID_PAIR_MODES:
+        mode = "auto"
+
+    if mode == "auto":
+        if capabilities.supports_steer:
+            return "steer"
+        if capabilities.supports_wait_gate:
+            return "wait"
+        if capabilities.supports_interrupt:
+            return "interrupt"
+        return "interrupt"
+
+    if mode == "steer":
+        if capabilities.supports_steer:
+            return "steer"
+        # Graceful fallback on current transport path.
+        if capabilities.supports_wait_gate:
+            return "wait"
+        return "interrupt"
+
+    if mode == "wait":
+        if capabilities.supports_wait_gate:
+            return "wait"
+        return "interrupt"
+
+    # "interrupt"
+    return "interrupt"
+
+
+def _merge_findings(existing: list[Finding], incoming: list[Finding]) -> list[Finding]:
+    """Deduplicate findings while preserving first-seen order."""
+    seen = {(f.lens, f.eye_name, f.description) for f in existing}
+    merged = list(existing)
+    for finding in incoming:
+        key = (finding.lens, finding.eye_name, finding.description)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(finding)
+    return merged
+
+
+def _get_lead_interceptor(
+    lead_model: str,
+    cwd: str,
+    pair_config: dict,
+    transport_override: str | None = None,
+) -> StreamInterceptor:
+    """Select lead interceptor with provider-specific transport overrides."""
+    provider = lead_model.split(".", 1)[0].lower()
+    requested_transport = (transport_override or "auto").strip().lower()
+    if provider == "codex":
+        codex_transport = (
+            requested_transport
+            if transport_override
+            else pair_config.get("codex_transport", "auto")
+        ).strip().lower()
+        model_hint = lead_model.split(".", 1)[1] if "." in lead_model else None
+        if codex_transport in {"app", "app_server", "auto"}:
+            try:
+                return CodexAppServerInterceptor(cwd=cwd, model_hint=model_hint)
+            except Exception:
+                # Safe fallback to legacy interceptor path.
+                pass
+    if provider == "claude":
+        claude_transport = (
+            requested_transport
+            if transport_override
+            else pair_config.get("claude_transport", "auto")
+        ).strip().lower()
+        model_hint = lead_model.split(".", 1)[1] if "." in lead_model else None
+        if claude_transport in {"live", "auto"}:
+            try:
+                return ClaudeLiveInterceptor(cwd=cwd, model_hint=model_hint)
+            except Exception:
+                pass
+    if provider == "gemini":
+        gemini_transport = (
+            requested_transport
+            if transport_override
+            else pair_config.get("gemini_transport", "auto")
+        ).strip().lower()
+        model_hint = lead_model.split(".", 1)[1] if "." in lead_model else None
+        if gemini_transport in {"acp", "auto"}:
+            try:
+                return GeminiACPInterceptor(cwd=cwd, model_hint=model_hint)
+            except Exception:
+                pass
+    return get_interceptor(lead_model, cwd=cwd)
+
+
 def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None):
     """Execute pair() - real-time pair programming with stream interruption.
 
@@ -522,6 +650,7 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
     first_check_lines = pair_config.get("first_check_lines", 5)
     check_interval = pair_config.get("check_every_n_lines", 10)
     max_interrupts = pair_config.get("max_interrupts", 10)
+    configured_mode = pair_config.get("mode", "auto")
     default_provider = config.get("providers", {}).get("default", "claude")
 
     # Parse lead model
@@ -553,8 +682,21 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
     # Build lead prompt
     lead_prompt = _build_lead_prompt(prompt, previous or {})
 
+    requested_transport = step.kwargs.get("transport")
     # Create lead interceptor
-    lead = get_interceptor(lead_model, cwd=cwd)
+    lead = _get_lead_interceptor(
+        lead_model=lead_model,
+        cwd=cwd,
+        pair_config=pair_config,
+        transport_override=requested_transport,
+    )
+    requested_mode = step.kwargs.get("mode", configured_mode)
+    selected_mode = _resolve_pair_mode(requested_mode, lead.capabilities())
+    deferred_mode = selected_mode == "wait"
+    if selected_mode in {"wait", "steer"}:
+        # Partial-stream checks are noisy for deferred/steer strategies.
+        first_check_lines = max(first_check_lines, 20)
+        check_interval = max(check_interval, 20)
 
     # Log start to memory
     memory.write(MemoryEntry(
@@ -569,6 +711,12 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
             "first_check_lines": first_check_lines,
             "check_interval": check_interval,
             "max_interrupts": max_interrupts,
+            "requested_mode": requested_mode,
+            "selected_mode": selected_mode,
+            "transport": {
+                "requested": requested_transport or pair_config.get("codex_transport", "auto"),
+                "selected": lead.name,
+            },
         },
     ))
 
@@ -590,6 +738,11 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
     preflight_thinking_lines = pair_config.get("preflight_thinking_lines", 50)
 
     Display.phase("pair", f"Lead ({lead_provider}) building, {len(eyes)} eye(s) watching...")
+    Display.phase(
+        "pair",
+        f"Mode: requested={requested_mode}, selected={selected_mode}",
+    )
+    Display.phase("pair", f"Lead transport: {lead.name}")
 
     lead.start(lead_prompt)
     complete = False
@@ -598,6 +751,7 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
     preflight: _PreflightChecker | None = None
     preflight_collected = False
     thinking_lines = 0
+    deferred_findings: list[Finding] = []
 
     eye_checker = _EyeChecker(eyes, usage_sink=eye_usage_list)
 
@@ -633,6 +787,38 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
             metadata={"interrupt_number": interrupt_count},
         ))
         return correction
+
+    def _do_steer(findings_list):
+        """Handle steer injection on active turn; fallback to interrupt if needed."""
+        nonlocal interrupt_count
+        interrupt_count += 1
+        all_findings.extend(findings_list)
+
+        for f in findings_list:
+            Display.pair_finding(f.eye_name, f.lens, f.description, f.latency)
+            memory.write(MemoryEntry(
+                timestamp=time.time(),
+                phase="pair",
+                agent=f.eye_name,
+                type="finding",
+                content=f.description,
+                metadata={"lens": f.lens, "latency": f.latency},
+            ))
+
+        correction = _build_correction_prompt(findings_list)
+        ok = lead.steer(correction)
+        memory.write(MemoryEntry(
+            timestamp=time.time(),
+            phase="pair",
+            agent="pair_orchestrator",
+            type="steer",
+            content=correction,
+            metadata={
+                "intervention_number": interrupt_count,
+                "steer_success": ok,
+            },
+        ))
+        return ok, correction
 
     while not complete and interrupt_count < max_interrupts:
         for chunk in lead.chunks():
@@ -726,7 +912,6 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
             # and can trigger another interrupt when they finish later.
             item = eye_checker.poll()
             if isinstance(item, Finding):
-                lead.terminate()
                 # Grab any other findings already in the queue
                 cycle_findings = [item]
                 while True:
@@ -735,6 +920,34 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
                         break
                     cycle_findings.append(more)
 
+                if deferred_mode:
+                    before = len(deferred_findings)
+                    deferred_findings = _merge_findings(
+                        deferred_findings, cycle_findings
+                    )
+                    added = len(deferred_findings) - before
+                    if added > 0:
+                        Display.phase(
+                            "pair",
+                            f"Queued {added} finding(s) for deferred apply "
+                            f"({len(deferred_findings)} pending)",
+                        )
+                    continue
+
+                if selected_mode == "steer":
+                    ok, correction = _do_steer(cycle_findings)
+                    if ok:
+                        # Continue same turn; no restart.
+                        lines_since_check = 0
+                        continue
+                    # Steer unavailable or failed -> fallback to interrupt path.
+                    Display.pair_interrupt(interrupt_count, len(cycle_findings))
+                    lead.terminate()
+                    lead.resume(correction)
+                    lines_since_check = 0
+                    break
+
+                lead.terminate()
                 correction = _do_interrupt(cycle_findings)
                 lead.resume(correction)
                 # Don't reset eye_checker -- slower eyes keep running
@@ -752,6 +965,27 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
             f"Thinking: {thinking_lines} lines"
             f" (preflight {'triggered' if preflight is not None else f'needs {preflight_thinking_lines}'})",
         )
+
+    # Deferred mode: apply queued findings only at natural turn boundary.
+    if complete and deferred_findings:
+        if interrupt_count >= max_interrupts:
+            Display.phase(
+                "pair",
+                "Deferred findings present but max interrupts reached; skipping apply.",
+            )
+        else:
+            Display.phase(
+                "pair",
+                f"Applying {len(deferred_findings)} deferred finding(s) after turn completion...",
+            )
+            correction = _do_interrupt(deferred_findings)
+            deferred_findings = []
+            lead.resume(correction)
+            for chunk in lead.chunks():
+                if getattr(chunk, "kind", "code") == "thinking":
+                    continue
+                lead_output += chunk.text
+                Display.pair_lead_chunk(lead_model, chunk.text)
 
     # Final eye check loop: review COMPLETE output, re-check until clean.
     # Any in-flight background check only covered a partial snapshot, so we
@@ -830,6 +1064,14 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
             "wall_clock": wall_clock,
             "findings_count": len(all_findings),
             "files_changed": files_changed,
+            "mode": {
+                "requested": requested_mode,
+                "selected": selected_mode,
+            },
+            "transport": {
+                "requested": requested_transport or pair_config.get("codex_transport", "auto"),
+                "selected": lead.name,
+            },
             "usage": {
                 "lead": lead_usage,
                 "eyes": eye_usage_list,
@@ -857,5 +1099,13 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
             "eyes": eye_usage_list,
             "total_tokens": total_tokens,
             "total_cost_usd": total_cost,
+        },
+        "mode": {
+            "requested": requested_mode,
+            "selected": selected_mode,
+        },
+        "transport": {
+            "requested": requested_transport or pair_config.get("codex_transport", "auto"),
+            "selected": lead.name,
         },
     }

@@ -70,8 +70,10 @@ class Provider(ABC):
 
     name: str = "base"
 
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None, config: dict | None = None):
         self.model_override = model
+        self.config = config or {}
+        self.timeout = self.config.get("provider_timeout", 480)
 
     def _record_usage(self, result: AgentResult) -> None:
         """Record token usage from an AgentResult to the quota tracker.
@@ -84,6 +86,15 @@ class Provider(ABC):
         """
         if result.success and result.tokens_used > 0:
             record_quota_usage(result.model, result.tokens_used)
+
+    def _get_effective_system_prompt(self, system_prompt: str) -> str:
+        """Inject conciseness instruction if configured."""
+        if self.config.get("concise", False):
+            instruction = "Be extremely concise. Focus on thoughts and code rather than full explanations."
+            if system_prompt:
+                return f"{instruction}\n\n{system_prompt}"
+            return instruction
+        return system_prompt
 
     @abstractmethod
     def ask(self, prompt: str, system_prompt: str = "",

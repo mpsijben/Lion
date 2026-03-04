@@ -24,7 +24,7 @@ except ImportError:
 from .session import SessionState
 from .commands import handle_command, COMMANDS, cmd_cycle_verbosity, cmd_context_toggle
 from .views import ViewRenderer
-from .autocomplete import get_pipeline_completions_simple
+from .autocomplete import get_pipeline_completions_for_readline, highlight_pipeline
 
 
 # Special escape sequences for keyboard shortcuts in interactive mode
@@ -179,6 +179,10 @@ def execute_pipeline(session: SessionState, input_str: str) -> None:
     if not valid:
         print(f"{RED}Error: {error}{RESET}")
         return
+
+    # Show highlighted pipeline
+    if steps:
+        print(f"{DIM}Pipeline: {highlight_pipeline(input_str)}{RESET}")
 
     # Create run directory
     run_id = (
@@ -353,8 +357,10 @@ def setup_readline():
                 # Command completion
                 _completion_cache["matches"] = get_command_completions(line_buffer)
             else:
-                # Pipeline completion
-                _completion_cache["matches"] = get_pipeline_completions_simple(line_buffer)
+                # Pipeline completion - returns text to replace readline's `text` word
+                _completion_cache["matches"] = get_pipeline_completions_for_readline(
+                    line_buffer, text
+                )
 
         matches = _completion_cache["matches"]
         if state < len(matches):
@@ -364,8 +370,8 @@ def setup_readline():
     readline.set_completer(completer)
     # Use complete for tab, allow partial word completion
     readline.parse_and_bind("tab: complete")
-    # Set word delimiters to not include common pipeline characters
-    readline.set_completer_delims(" \t\n;")  # Keep only whitespace and semicolon
+    # Delimiters include parens and comma so readline words align with tokens
+    readline.set_completer_delims(" \t\n;(),")  # space, tab, newline, semicolon, parens, comma
 
 
 def setup_interactive_keybindings():
@@ -498,8 +504,47 @@ def build_prompt(session: SessionState) -> str:
 
 def print_banner(session: SessionState):
     """Print the startup banner."""
-    print(f"\n{LION} {BOLD}LionCLI{RESET} - Interactive Reasoning Explorer")
-    print(f"{DIM}{'=' * 45}{RESET}")
+    lion_art = rf'''{YELLOW}
+                      ,.
+                   ,_> `.   ,';
+               ,-`'      `'   '`'._
+            ,,-) ---._   |   .---''`-),.
+          ,'      `.  \  ;  /   _,'     `,
+       ,--' ____       \   '  ,'    ___  `-,
+      _>   /--. `-.              .-'.--\   \__
+     '-,  (    `.  `.,`~ \~'-. ,' ,'    )    _\
+     _<    \     \ ,'  ') )   `. /     /    <,.
+  ,-'   _,  \    ,'    ( /      `.    /        `-,
+  `-.,-'     `.,'       `         `.,'  `\    ,-'
+   ,'       _  /   ,,,      ,,,     \     `-. `-._
+  /-,     ,'  ;   ' _ \    / _ `     ; `.     `(`-\
+   /-,        ;    (o)      (o)      ;          `'`,
+ ,~-'  ,-'    \     '        `      /     \      <_
+ /-. ,'        \                   /       \     ,-'
+   '`,     ,'   `-/             \-' `.      `-. <
+    /_    /      /   (_     _)   \    \          `,
+      `-._;  ,' |  .::.`-.-' :..  |       `-.    _\
+        _/       \  `:: ,^. :.:' / `.        \,-'
+      '`.   ,-'  /`-..-'-.-`-..-'\            `-.
+        >_ /     ;  (\/( ' )\/)  ;     `-.    _<
+        ,-'      `.  \`-^^^-'/  ,'        \ _<
+         `-,  ,'   `. `"""""' ,'   `-.   <`'
+           ')        `._.,,_.'        \ ,-'
+            '._        '`'`'   \       <
+               >   ,'       ,   `-.   <`'
+                `,/          \      ,-`
+                 `,   ,' |   /     /
+                  '; /   ;        (
+                   _)|   `       (
+                   `')         .-'
+                     <_   \   /
+                       \   /\(
+                        `;/  `
+{RESET}'''
+    print()
+    print(lion_art.rstrip())
+    print(f"{LION} {BOLD}LionCLI{RESET} - Interactive Reasoning Explorer")
+    print(f"{DIM}{'=' * 58}{RESET}")
 
     if session.config_path:
         print(f"Config:   {CYAN}{session.config_path}{RESET}")
@@ -656,6 +701,13 @@ In the REPL:
 
             if not line:
                 continue
+
+            # Redraw the line with syntax highlighting (colored arrows, functions, etc.)
+            if "->" in line and not line.startswith(":"):
+                colored = highlight_pipeline(line)
+                # Move cursor up one line, clear it, and reprint with colors
+                sys.stdout.write(f"\033[A\r\033[K{prompt_str}{colored}\n")
+                sys.stdout.flush()
 
             # Handle interactive mode keyboard shortcuts
             if session.interactive_mode:

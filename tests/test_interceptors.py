@@ -1,11 +1,13 @@
 """Tests for lion.interceptors module."""
 
 import json
+import time
 import pytest
 
 from lion.interceptors.base import Chunk, StreamStats, StreamInterceptor
 from lion.interceptors.claude import ClaudeInterceptor
 from lion.interceptors.gemini import GeminiInterceptor
+from lion.interceptors.gemini_acp import GeminiACPInterceptor
 from lion.interceptors.codex import CodexInterceptor
 
 
@@ -255,3 +257,16 @@ class TestCodexInterceptor:
         ci = CodexInterceptor()
         chunks = ci.parse_line('{"type":"error"}', "stderr")
         assert chunks == []
+
+
+class TestGeminiACPInterceptor:
+    def test_chunks_idle_timeout_exits(self):
+        gi = GeminiACPInterceptor(cwd=".")
+        gi._max_idle_seconds = 0.01
+        gi._max_turn_seconds = 10.0
+        gi._set_active_request("1")
+        gi._last_event_at = time.time() - 1.0
+
+        chunks = list(gi.chunks(poll_interval=0.01))
+        assert chunks == []
+        assert any("idle timeout" in e for e in gi.stats.errors)

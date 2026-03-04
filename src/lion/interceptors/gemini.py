@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from .base import Chunk, StreamInterceptor
+from .base import Chunk, InterceptorCapabilities, StreamInterceptor
 
 
 # Map short hints to full Gemini model names.
@@ -42,6 +42,16 @@ class GeminiInterceptor(StreamInterceptor):
             cmd.extend(["--resume", "latest"])
         cmd.extend(["-p", prompt])
         return cmd
+
+    def capabilities(self) -> InterceptorCapabilities:
+        # Current Lion path is prompt/resume turns, no ACP live steering.
+        return InterceptorCapabilities(
+            supports_resume=True,
+            supports_interrupt=True,
+            supports_wait_gate=True,
+            supports_steer=False,
+            supports_live_input=False,
+        )
 
     def parse_line(self, line: str, stream: str) -> list[Chunk]:
         chunks: list[Chunk] = []

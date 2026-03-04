@@ -33,8 +33,8 @@ class GeminiProvider(Provider):
     # Override with gemini.gemini-3-pro-preview if you have a paid plan.
     DEFAULT_MODEL = "gemini-2.5-flash"
 
-    def __init__(self, model=None):
-        super().__init__(model or self.DEFAULT_MODEL)
+    def __init__(self, model=None, config=None):
+        super().__init__(model or self.DEFAULT_MODEL, config)
         if model:
             self.name = f"gemini.{model}"
         self._session_id = None
@@ -54,27 +54,32 @@ class GeminiProvider(Provider):
         """Use gemini CLI for non-interactive single-turn queries."""
         _wait_for_rate_limit()
 
+        system_prompt = self._get_effective_system_prompt(system_prompt)
+        full_prompt = prompt
+        if system_prompt:
+            full_prompt = f"{system_prompt}\n\n{prompt}"
+
         cmd = ["gemini", "-o", "json"]
         if self.model_override:
             cmd.extend(["-m", self.model_override])
         if resume and (self._has_session or self._session_id):
             # Gemini CLI uses --resume (latest/index) for session continuation.
             cmd.extend(["--resume", "latest"])
-        cmd.extend(["-p", prompt])
+        cmd.extend(["-p", full_prompt])
 
         env = self._safe_env()
 
         start = time.time()
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=cwd, timeout=480,
+                cmd, capture_output=True, text=True, cwd=cwd, timeout=self.timeout,
                 env=env,
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
                 content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 480s"
+                success=False, error=f"Timeout after {self.timeout}s"
             )
         duration = time.time() - start
 
@@ -90,6 +95,7 @@ class GeminiProvider(Provider):
             self._session_id = parsed.session_id
         if parsed.success:
             self._has_session = True
+        self._record_usage(parsed)
         return parsed
 
     def ask_with_files(self, prompt, files, system_prompt="", cwd="."):
@@ -110,7 +116,13 @@ class GeminiProvider(Provider):
         return self.ask(prompt, system_prompt, cwd, resume=False)
 
     def implement(self, prompt, cwd="."):
-        """Use gemini CLI with --yolo to make actual file changes."""
+        """Use gemini CLI with streaming to make actual file changes.
+
+        Streams output via Display.pair_lead_chunk() so the TUI can show
+        progress in real time.
+        """
+        from ..display import Display
+
         _wait_for_rate_limit()
 
         impl_prompt = (
@@ -121,7 +133,7 @@ class GeminiProvider(Provider):
             "from documentation or proposals. Only write/edit code files."
         )
 
-        cmd = ["gemini", "-o", "json", "--yolo"]
+        cmd = ["gemini", "-o", "stream-json", "--yolo"]
         if self.model_override:
             cmd.extend(["-m", self.model_override])
         if self._has_session or self._session_id:
@@ -132,30 +144,102 @@ class GeminiProvider(Provider):
 
         start = time.time()
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=cwd, timeout=1200,
-                env=env,
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, cwd=cwd, env=env,
             )
-        except subprocess.TimeoutExpired:
+        except Exception as e:
             return AgentResult(
                 content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 1200s"
+                success=False, error=str(e),
             )
+
+        # Stream stdout, parsing Gemini stream-json (may be multi-line JSON)
+        lines_collected = []
+        json_buffer = ""
+        result_content = ""
+        session_id = None
+        try:
+            for line in proc.stdout:
+                lines_collected.append(line)
+                if not line.strip():
+                    continue
+                # Gemini may emit multi-line JSON; buffer until parseable
+                stripped = line.strip()
+                if json_buffer or stripped.startswith("{"):
+                    json_buffer = f"{json_buffer}\n{line}".strip()
+                    try:
+                        entry = json.loads(json_buffer)
+                        json_buffer = ""
+                    except json.JSONDecodeError:
+                        continue
+                else:
+                    continue
+
+                if not isinstance(entry, dict):
+                    continue
+
+                if entry.get("session_id"):
+                    session_id = entry["session_id"]
+
+                entry_type = entry.get("type", "")
+                if entry_type == "tool_use":
+                    params = entry.get("parameters", {})
+                    code = params.get("content", "") or params.get("command", "")
+                    if code:
+                        Display.pair_lead_chunk(self.name, code)
+                elif entry_type == "message" and entry.get("role") == "assistant":
+                    content = entry.get("content", "")
+                    if content:
+                        Display.pair_lead_chunk(self.name, content)
+                        result_content += content
+                elif entry_type == "result":
+                    pass  # stats only
+                elif "response" in entry:
+                    resp = entry["response"]
+                    if resp:
+                        Display.pair_lead_chunk(self.name, resp)
+                        result_content = resp
+
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return AgentResult(
+                content="", model=self.name, tokens_used=0,
+                duration_seconds=time.time() - start,
+                success=False, error="Timeout after 1200s",
+            )
+
         duration = time.time() - start
 
-        if result.returncode != 0:
+        if proc.returncode != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
             return AgentResult(
                 content="", model=self.name, tokens_used=0,
                 duration_seconds=duration, success=False,
-                error=result.stderr or f"Exit code {result.returncode}"
+                error=stderr or f"Exit code {proc.returncode}",
             )
 
-        parsed = self._parse_output(result.stdout, duration)
+        if session_id:
+            self._session_id = session_id
+        self._has_session = True
+
+        if result_content:
+            agent_result = AgentResult(
+                content=result_content, model=self.name, tokens_used=0,
+                duration_seconds=duration, success=True,
+                session_id=session_id,
+            )
+            self._record_usage(agent_result)
+            return agent_result
+
+        # Fallback: parse collected output as regular JSON
+        full_stdout = "".join(lines_collected)
+        parsed = self._parse_output(full_stdout, duration)
         if parsed.session_id:
             self._session_id = parsed.session_id
-        if parsed.success:
-            self._has_session = True
+        self._record_usage(parsed)
         return parsed
 
     def _parse_output(self, stdout, duration):

@@ -45,4 +45,4 @@ def get_provider(name: str, config: dict = None):
             f"Available: {list(PROVIDERS.keys())}"
         )
 
-    return PROVIDERS[provider_name](model=model)
+    return PROVIDERS[provider_name](model=model, config=config)

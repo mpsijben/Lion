@@ -8,6 +8,9 @@ from lion.functions.pair import (
     Finding,
     EyeResult,
     EyeConfig,
+    _get_lead_interceptor,
+    _is_non_actionable_review,
+    _resolve_pair_mode,
     _EyeChecker,
     _parse_eyes,
     _build_eye_prompt,
@@ -18,7 +21,7 @@ from lion.functions.pair import (
     execute_pair,
 )
 from lion.lenses import get_lens
-from lion.interceptors.base import Chunk, StreamInterceptor
+from lion.interceptors.base import Chunk, InterceptorCapabilities, StreamInterceptor
 from lion.parser import parse_lion_input
 
 
@@ -60,6 +63,19 @@ class MockInterceptor(StreamInterceptor):
     def resume(self, correction):
         self._terminated = False
         self._started = True
+
+
+class WaitCapableLeadInterceptor(MockInterceptor):
+    """Lead interceptor that advertises wait-gate support."""
+
+    def capabilities(self):
+        return InterceptorCapabilities(
+            supports_resume=True,
+            supports_interrupt=True,
+            supports_wait_gate=True,
+            supports_steer=False,
+            supports_live_input=False,
+        )
 
 
 class TestParseEyes:
@@ -182,6 +198,20 @@ class TestCheckEye:
             result = _check_eye(eye, "some code")
             assert result.status == "empty", f"Expected 'empty' for response {empty!r}"
             assert result.finding is None
+
+    def test_non_actionable_context_request_filtered(self):
+        lens = get_lens("sec")
+        eye = EyeConfig(
+            lens_name="sec",
+            lens=lens,
+            provider="mock",
+            interceptor=MockInterceptor(
+                "I need to see the complete code to provide a proper security review."
+            ),
+        )
+        result = _check_eye(eye, "partial code")
+        assert result.status == "clean"
+        assert result.finding is None
 
 
 class TestCheckEyesParallel:
@@ -454,3 +484,151 @@ class TestExecutePair:
         assert "interrupts" in result
         assert "findings" in result
         assert "wall_clock" in result
+
+    @patch("lion.functions.pair.get_interceptor")
+    @patch("lion.functions.pair._get_git_status_snapshot")
+    @patch("lion.functions.pair._extract_files_changed")
+    def test_pair_wait_mode_defers_findings(self, mock_files, mock_git, mock_get):
+        """Wait mode should queue findings and apply after turn completion."""
+        lead = WaitCapableLeadInterceptor("line1\nline2\nline3\nline4\n")
+        eye = MockInterceptor("Critical issue")
+
+        def _factory(name, cwd="."):
+            if name.startswith("mock"):
+                return eye
+            return lead
+
+        mock_get.side_effect = _factory
+        mock_git.return_value = set()
+        mock_files.return_value = []
+
+        from lion.parser import PipelineStep
+        step = PipelineStep(
+            function="pair",
+            args=["claude"],
+            kwargs={"eyes": "sec.mock", "mode": "wait", "transport": "legacy"},
+        )
+        config = self._make_config()
+        config["pair"]["max_final_rounds"] = 1
+
+        result = execute_pair(
+            prompt="Build x",
+            previous={},
+            step=step,
+            memory=self._make_memory(),
+            config=config,
+            cwd="/tmp",
+        )
+
+        assert result["success"] is True
+        assert result["interrupts"] >= 1
+        assert result["mode"]["selected"] == "wait"
+
+
+class TestPairModeResolution:
+    def test_auto_prefers_steer_then_wait_then_interrupt(self):
+        caps = InterceptorCapabilities(
+            supports_resume=True,
+            supports_interrupt=True,
+            supports_wait_gate=True,
+            supports_steer=True,
+            supports_live_input=False,
+        )
+        assert _resolve_pair_mode("auto", caps) == "steer"
+
+        caps = InterceptorCapabilities(
+            supports_resume=True,
+            supports_interrupt=True,
+            supports_wait_gate=True,
+            supports_steer=False,
+            supports_live_input=False,
+        )
+        assert _resolve_pair_mode("auto", caps) == "wait"
+
+        caps = InterceptorCapabilities(
+            supports_resume=True,
+            supports_interrupt=True,
+            supports_wait_gate=False,
+            supports_steer=False,
+            supports_live_input=False,
+        )
+        assert _resolve_pair_mode("auto", caps) == "interrupt"
+
+    def test_explicit_steer_falls_back(self):
+        caps = InterceptorCapabilities(
+            supports_resume=True,
+            supports_interrupt=True,
+            supports_wait_gate=True,
+            supports_steer=False,
+            supports_live_input=False,
+        )
+        assert _resolve_pair_mode("steer", caps) == "wait"
+
+        caps = InterceptorCapabilities(
+            supports_resume=True,
+            supports_interrupt=True,
+            supports_wait_gate=False,
+            supports_steer=False,
+            supports_live_input=False,
+        )
+        assert _resolve_pair_mode("steer", caps) == "interrupt"
+
+
+class TestFindingFilters:
+    def test_non_actionable_patterns(self):
+        assert _is_non_actionable_review("Please share the complete code.")
+        assert _is_non_actionable_review("Not enough context for review.")
+        assert not _is_non_actionable_review("SQL injection in login query.")
+
+
+class TestLeadTransportSelection:
+    @patch("lion.functions.pair.CodexAppServerInterceptor")
+    @patch("lion.functions.pair.get_interceptor")
+    def test_codex_auto_prefers_app_server(self, mock_get, mock_codex_cls):
+        mock_codex = MagicMock()
+        mock_codex_cls.return_value = mock_codex
+        selected = _get_lead_interceptor(
+            lead_model="codex",
+            cwd="/tmp",
+            pair_config={"codex_transport": "auto"},
+        )
+        assert selected is mock_codex
+        mock_get.assert_not_called()
+
+    @patch("lion.functions.pair.ClaudeLiveInterceptor")
+    @patch("lion.functions.pair.get_interceptor")
+    def test_claude_auto_prefers_live(self, mock_get, mock_live_cls):
+        mock_live = MagicMock()
+        mock_live_cls.return_value = mock_live
+        selected = _get_lead_interceptor(
+            lead_model="claude",
+            cwd="/tmp",
+            pair_config={"claude_transport": "auto"},
+        )
+        assert selected is mock_live
+        mock_get.assert_not_called()
+
+    @patch("lion.functions.pair.GeminiACPInterceptor")
+    @patch("lion.functions.pair.get_interceptor")
+    def test_gemini_auto_prefers_acp(self, mock_get, mock_acp_cls):
+        mock_acp = MagicMock()
+        mock_acp_cls.return_value = mock_acp
+        selected = _get_lead_interceptor(
+            lead_model="gemini",
+            cwd="/tmp",
+            pair_config={"gemini_transport": "auto"},
+        )
+        assert selected is mock_acp
+        mock_get.assert_not_called()
+
+    @patch("lion.functions.pair.ClaudeLiveInterceptor", side_effect=RuntimeError("boom"))
+    @patch("lion.functions.pair.get_interceptor")
+    def test_transport_falls_back_to_legacy(self, mock_get, _mock_live_cls):
+        legacy = MockInterceptor("x")
+        mock_get.return_value = legacy
+        selected = _get_lead_interceptor(
+            lead_model="claude",
+            cwd="/tmp",
+            pair_config={"claude_transport": "auto"},
+        )
+        assert selected is legacy

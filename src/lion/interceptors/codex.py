@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from .base import Chunk, StreamInterceptor
+from .base import Chunk, InterceptorCapabilities, StreamInterceptor
 
 
 # Map short hints to full OpenAI model names.
@@ -36,6 +36,16 @@ class CodexInterceptor(StreamInterceptor):
             model = CODEX_MODELS.get(self.model_hint, self.model_hint)
             cmd.extend(["-m", model])
         return cmd
+
+    def capabilities(self) -> InterceptorCapabilities:
+        # Current Lion path is codex exec/resume (app-server steer not wired yet).
+        return InterceptorCapabilities(
+            supports_resume=True,
+            supports_interrupt=True,
+            supports_wait_gate=False,
+            supports_steer=False,
+            supports_live_input=False,
+        )
 
     def parse_line(self, line: str, stream: str) -> list[Chunk]:
         chunks: list[Chunk] = []

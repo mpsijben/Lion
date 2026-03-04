@@ -1,0 +1,68 @@
+[
+  {
+    "model": "claude",
+    "requested_transport": "legacy",
+    "selected_transport": "claude",
+    "selected_mode": "wait",
+    "elapsed_s": 14.57,
+    "interrupts": 0,
+    "findings_count": 0,
+    "tokens_total": 56397,
+    "cost_usd": 0.08648829999999999
+  },
+  {
+    "model": "claude",
+    "requested_transport": "live",
+    "selected_transport": "claude.live",
+    "selected_mode": "steer",
+    "elapsed_s": 28.76,
+    "interrupts": 1,
+    "findings_count": 2,
+    "tokens_total": 93335,
+    "cost_usd": 0.22800350000000003
+  },
+  {
+    "model": "codex",
+    "requested_transport": "legacy",
+    "selected_transport": "codex",
+    "selected_mode": "interrupt",
+    "elapsed_s": 27.9,
+    "interrupts": 1,
+    "findings_count": 2,
+    "tokens_total": 90447,
+    "cost_usd": 0.1482419
+  },
+  {
+    "model": "codex",
+    "requested_transport": "app_server",
+    "selected_transport": "codex.app_server",
+    "selected_mode": "steer",
+    "elapsed_s": 48.88,
+    "interrupts": 1,
+    "findings_count": 2,
+    "tokens_total": 47070,
+    "cost_usd": 0.0788626
+  },
+  {
+    "model": "gemini",
+    "requested_transport": "legacy",
+    "selected_transport": "gemini",
+    "selected_mode": "wait",
+    "elapsed_s": 51.83,
+    "interrupts": 1,
+    "findings_count": 2,
+    "tokens_total": 48888,
+    "cost_usd": 0.0693551
+  },
+  {
+    "model": "gemini",
+    "requested_transport": "acp",
+    "selected_transport": "gemini.acp",
+    "selected_mode": "wait",
+    "elapsed_s": 57.67,
+    "interrupts": 0,
+    "findings_count": 0,
+    "tokens_total": 0,
+    "cost_usd": 0.0
+  }
+]

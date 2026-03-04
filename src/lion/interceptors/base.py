@@ -46,6 +46,21 @@ class StreamStats:
         return int((self.first_chunk_at - self.started_at) * 1000)
 
 
+@dataclass(frozen=True)
+class InterceptorCapabilities:
+    """Runtime capabilities of an interceptor transport path.
+
+    These describe what the *current implementation path* supports, not
+    necessarily what the upstream provider supports in another interface.
+    """
+
+    supports_resume: bool = True
+    supports_interrupt: bool = True
+    supports_wait_gate: bool = False
+    supports_steer: bool = False
+    supports_live_input: bool = False
+
+
 class StreamInterceptor:
     """Base class: start CLI, stream chunks, terminate, resume.
 
@@ -71,6 +86,10 @@ class StreamInterceptor:
 
     def parse_line(self, line: str, stream: str) -> list[Chunk]:
         raise NotImplementedError
+
+    def capabilities(self) -> InterceptorCapabilities:
+        """Capabilities for the currently configured interceptor path."""
+        return InterceptorCapabilities()
 
     def _env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -184,6 +203,15 @@ class StreamInterceptor:
             if self._proc:
                 self._proc.kill()
         self.start(correction, resume=True)
+
+    def steer(self, guidance: str) -> bool:
+        """Inject guidance into an active turn if supported.
+
+        Returns:
+            True when guidance was accepted by the provider transport.
+            False when unsupported or not possible.
+        """
+        return False
 
     @staticmethod
     def _chunk(source: str, text: str, raw: str, stream: str,

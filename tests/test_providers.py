@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from lion.providers import get_provider, PROVIDERS
-from lion.providers.base import Provider, AgentResult
+from lion.providers.base import Provider, AgentResult, set_quota_recorder
 from lion.providers.claude import ClaudeProvider
 from lion.providers.gemini import GeminiProvider
 from lion.providers.codex import CodexProvider
@@ -218,14 +218,20 @@ class TestClaudeProvider:
         assert "FILES:" in call_args[prompt_arg_idx]
 
     def test_implement_success(self):
-        """Test successful implement call."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps([
-            {"type": "result", "result": "Code implemented", "is_error": False}
-        ])
+        """Test successful implement call with streaming Popen."""
+        # stream-json: each line is a JSON object
+        stream_lines = [
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "implementing..."}]}}) + "\n",
+            json.dumps({"type": "result", "result": "Code implemented", "is_error": False}) + "\n",
+        ]
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(stream_lines)
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
 
-        with patch("lion.providers.claude.subprocess.run", return_value=mock_result):
+        with patch("lion.providers.claude.subprocess.Popen", return_value=mock_proc):
             provider = ClaudeProvider()
             result = provider.implement("Build feature")
 
@@ -303,16 +309,22 @@ class TestGeminiProvider:
         assert "Timeout" in result.error
 
     def test_implement_uses_yolo_flag(self):
-        """Test that implement uses --yolo flag."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps({"response": "Done"})
+        """Test that implement uses --yolo flag with streaming Popen."""
+        stream_lines = [
+            json.dumps({"type": "message", "role": "assistant", "content": "Done"}) + "\n",
+        ]
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(stream_lines)
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
 
-        with patch("lion.providers.gemini.subprocess.run", return_value=mock_result) as mock_run:
+        with patch("lion.providers.gemini.subprocess.Popen", return_value=mock_proc) as mock_popen:
             provider = GeminiProvider()
             provider.implement("Build feature")
 
-        call_args = mock_run.call_args[0][0]
+        call_args = mock_popen.call_args[0][0]
         assert "--yolo" in call_args
 
     def test_parse_output_empty_response(self):
@@ -366,16 +378,22 @@ class TestCodexProvider:
         assert "--full-auto" in call_args
 
     def test_implement_uses_bypass_sandbox(self):
-        """Test that implement uses --dangerously-bypass-approvals-and-sandbox."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = '{"type": "item.completed", "item": {"text": "done"}}\n'
+        """Test that implement uses --dangerously-bypass-approvals-and-sandbox with streaming Popen."""
+        stream_lines = [
+            '{"type": "item.completed", "item": {"text": "done"}}\n',
+        ]
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(stream_lines)
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
 
-        with patch("lion.providers.codex.subprocess.run", return_value=mock_result) as mock_run:
+        with patch("lion.providers.codex.subprocess.Popen", return_value=mock_proc) as mock_popen:
             provider = CodexProvider()
             provider.implement("Build feature")
 
-        call_args = mock_run.call_args[0][0]
+        call_args = mock_popen.call_args[0][0]
         assert "--dangerously-bypass-approvals-and-sandbox" in call_args
 
     def test_parse_output_multiple_items(self):
@@ -480,3 +498,65 @@ class TestProviderEdgeCases:
         call_args = mock_run.call_args[0][0]
         assert "--system-prompt" in call_args
         assert "You are a helpful assistant" in call_args
+
+
+class TestProviderQuotaTracking:
+    """Tests for quota usage tracking integration."""
+
+    def teardown_method(self):
+        """Reset global quota recorder after each test."""
+        set_quota_recorder(None)
+
+    def test_gemini_ask_records_quota_usage(self):
+        """Successful Gemini calls with tokens should be recorded."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({
+            "response": "Gemini response",
+            "stats": {"models": {"gemini": {"tokens": {"total": 123}}}},
+        })
+
+        recorded = []
+        set_quota_recorder(lambda model, tokens: recorded.append((model, tokens)) or True)
+
+        with patch("lion.providers.gemini.subprocess.run", return_value=mock_result):
+            provider = GeminiProvider()
+            result = provider.ask("Test prompt")
+
+        assert result.success is True
+        assert recorded == [("gemini", 123)]
+
+    def test_codex_ask_records_quota_usage(self):
+        """Successful Codex calls with tokens should be recorded."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = (
+            '{"type": "item.completed", "item": {"text": "Codex response"}}\n'
+            '{"type": "turn.completed", "usage": {"input_tokens": 40, "output_tokens": 60}}\n'
+        )
+
+        recorded = []
+        set_quota_recorder(lambda model, tokens: recorded.append((model, tokens)) or True)
+
+        with patch("lion.providers.codex.subprocess.run", return_value=mock_result):
+            provider = CodexProvider()
+            result = provider.ask("Test prompt")
+
+        assert result.success is True
+        assert recorded == [("codex", 100)]
+
+    def test_failed_call_does_not_record_quota_usage(self):
+        """Failed provider calls should not be recorded."""
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "Error occurred"
+
+        recorded = []
+        set_quota_recorder(lambda model, tokens: recorded.append((model, tokens)) or True)
+
+        with patch("lion.providers.codex.subprocess.run", return_value=mock_result):
+            provider = CodexProvider()
+            result = provider.ask("Test prompt")
+
+        assert result.success is False
+        assert recorded == []

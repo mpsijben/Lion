@@ -10,8 +10,8 @@ from .base import Provider, AgentResult
 class CodexProvider(Provider):
     name = "codex"
 
-    def __init__(self, model=None):
-        super().__init__(model)
+    def __init__(self, model=None, config=None):
+        super().__init__(model, config)
         if model:
             self.name = f"codex.{model}"
 
@@ -24,7 +24,12 @@ class CodexProvider(Provider):
 
     def ask(self, prompt, system_prompt="", cwd="."):
         """Use codex exec --json for non-interactive queries."""
-        cmd = ["codex", "exec", "--json", "--full-auto", prompt]
+        system_prompt = self._get_effective_system_prompt(system_prompt)
+        full_prompt = prompt
+        if system_prompt:
+            full_prompt = f"{system_prompt}\n\n{prompt}"
+
+        cmd = ["codex", "exec", "--json", "--full-auto", full_prompt]
         if cwd != ".":
             cmd.extend(["-C", cwd])
 
@@ -33,14 +38,14 @@ class CodexProvider(Provider):
         start = time.time()
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=480,
+                cmd, capture_output=True, text=True, timeout=self.timeout,
                 env=env,
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
                 content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 480s"
+                success=False, error=f"Timeout after {self.timeout}s"
             )
         duration = time.time() - start
 
@@ -51,7 +56,9 @@ class CodexProvider(Provider):
                 error=result.stderr or f"Exit code {result.returncode}"
             )
 
-        return self._parse_output(result.stdout, duration)
+        parsed = self._parse_output(result.stdout, duration)
+        self._record_usage(parsed)
+        return parsed
 
     def ask_with_files(self, prompt, files, system_prompt="", cwd="."):
         """Include file contents in the prompt."""
@@ -67,7 +74,13 @@ class CodexProvider(Provider):
         return self.ask(full_prompt, system_prompt, cwd)
 
     def implement(self, prompt, cwd="."):
-        """Use codex exec with full permissions to make file changes."""
+        """Use codex exec with streaming to make actual file changes.
+
+        Streams output via Display.pair_lead_chunk() so the TUI can show
+        progress in real time.
+        """
+        from ..display import Display
+
         impl_prompt = (
             f"{prompt}\n\n"
             "IMPORTANT: Make the actual code changes. Edit the files directly. "
@@ -88,26 +101,91 @@ class CodexProvider(Provider):
 
         start = time.time()
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=1200,
-                env=env,
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env,
             )
-        except subprocess.TimeoutExpired:
+        except Exception as e:
             return AgentResult(
                 content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 1200s"
+                success=False, error=str(e),
             )
+
+        # Stream JSONL output line by line
+        lines_collected = []
+        content = ""
+        tokens = 0
+        try:
+            for line in proc.stdout:
+                lines_collected.append(line)
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = entry.get("type")
+                if msg_type == "item.completed":
+                    item = entry.get("item", {})
+                    item_type = item.get("type", "")
+                    if item_type == "command_execution":
+                        cmd_text = item.get("command", "")
+                        if cmd_text:
+                            Display.pair_lead_chunk(self.name, cmd_text)
+                    else:
+                        text = item.get("text", "")
+                        if not text and isinstance(item.get("content"), list):
+                            text = " ".join(
+                                part.get("text", "")
+                                for part in item["content"]
+                                if isinstance(part, dict)
+                            )
+                        if text:
+                            Display.pair_lead_chunk(self.name, text)
+                            content = text if not content else content + "\n" + text
+                elif msg_type == "item.delta":
+                    delta = entry.get("delta", {})
+                    text = delta.get("text")
+                    if text:
+                        Display.pair_lead_chunk(self.name, text)
+                elif msg_type == "turn.completed":
+                    usage = entry.get("usage", {})
+                    tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return AgentResult(
+                content="", model=self.name, tokens_used=0,
+                duration_seconds=time.time() - start,
+                success=False, error="Timeout after 1200s",
+            )
+
         duration = time.time() - start
 
-        if result.returncode != 0:
+        if proc.returncode != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
             return AgentResult(
                 content="", model=self.name, tokens_used=0,
                 duration_seconds=duration, success=False,
-                error=result.stderr or f"Exit code {result.returncode}"
+                error=stderr or f"Exit code {proc.returncode}",
             )
 
-        return self._parse_output(result.stdout, duration)
+        if content:
+            agent_result = AgentResult(
+                content=content, model=self.name, tokens_used=tokens,
+                duration_seconds=duration, success=True,
+            )
+            self._record_usage(agent_result)
+            return agent_result
+
+        # Fallback: parse collected output
+        full_stdout = "".join(lines_collected)
+        parsed = self._parse_output(full_stdout, duration)
+        self._record_usage(parsed)
+        return parsed
 
     def _parse_output(self, stdout, duration):
         """Parse codex exec --json JSONL output.

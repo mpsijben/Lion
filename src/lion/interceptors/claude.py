@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from .base import Chunk, StreamInterceptor
+from .base import Chunk, InterceptorCapabilities, StreamInterceptor
 
 
 # Map short hints to full Claude model names.
@@ -43,6 +43,16 @@ class ClaudeInterceptor(StreamInterceptor):
         if resume and self.session_id:
             cmd.extend(["--resume", self.session_id])
         return cmd
+
+    def capabilities(self) -> InterceptorCapabilities:
+        # Current Lion path uses claude -p + resume turns (no live stdin).
+        return InterceptorCapabilities(
+            supports_resume=True,
+            supports_interrupt=True,
+            supports_wait_gate=True,
+            supports_steer=False,
+            supports_live_input=False,
+        )
 
     def parse_line(self, line: str, stream: str) -> list[Chunk]:
         chunks: list[Chunk] = []

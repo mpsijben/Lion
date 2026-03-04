@@ -14,8 +14,8 @@ class ClaudeProvider(Provider):
     """
     name = "claude"
 
-    def __init__(self, model=None):
-        super().__init__(model)
+    def __init__(self, model=None, config=None):
+        super().__init__(model, config)
         if model:
             self.name = f"claude.{model}"
 
@@ -36,6 +36,8 @@ class ClaudeProvider(Provider):
         Returns:
             AgentResult with response
         """
+        system_prompt = self._get_effective_system_prompt(system_prompt)
+
         cmd = ["claude", "-p", prompt, "--output-format", "json"]
         if self.model_override:
             cmd.extend(["--model", self.model_override])
@@ -47,14 +49,14 @@ class ClaudeProvider(Provider):
         start = time.time()
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=cwd, timeout=480,
+                cmd, capture_output=True, text=True, cwd=cwd, timeout=self.timeout,
                 env=env,
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
                 content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 480s"
+                success=False, error=f"Timeout after {self.timeout}s"
             )
         duration = time.time() - start
 
@@ -87,7 +89,10 @@ class ClaudeProvider(Provider):
         return self.ask(full_prompt, system_prompt, cwd)
 
     def implement(self, prompt: str, cwd: str = ".") -> AgentResult:
-        """Use claude -p to make actual file changes.
+        """Use claude -p with streaming to make actual file changes.
+
+        Streams output via Display.pair_lead_chunk() so the TUI can show
+        progress in real time, while still collecting the full result.
 
         Args:
             prompt: The implementation prompt
@@ -96,6 +101,8 @@ class ClaudeProvider(Provider):
         Returns:
             AgentResult with response
         """
+        from ..display import Display
+
         impl_prompt = (
             f"{prompt}\n\n"
             "IMPORTANT: Make the actual code changes. Edit the files directly. "
@@ -106,7 +113,7 @@ class ClaudeProvider(Provider):
 
         cmd = [
             "claude", "-p", impl_prompt,
-            "--output-format", "json",
+            "--output-format", "stream-json",
             "--dangerously-skip-permissions",
         ]
         if self.model_override:
@@ -116,27 +123,84 @@ class ClaudeProvider(Provider):
 
         start = time.time()
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=cwd, timeout=1200,
-                env=env,
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, cwd=cwd, env=env,
             )
-        except subprocess.TimeoutExpired:
+        except Exception as e:
             return AgentResult(
                 content="", model=self.name, tokens_used=0,
                 duration_seconds=time.time() - start,
-                success=False, error="Timeout after 1200s"
+                success=False, error=str(e),
             )
+
+        # Stream stdout line by line, parsing stream-json
+        lines_collected = []
+        result_entry = None
+        try:
+            for line in proc.stdout:
+                lines_collected.append(line)
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = entry.get("type")
+                if msg_type == "assistant":
+                    message = entry.get("message", {})
+                    for part in message.get("content", []):
+                        part_type = part.get("type", "text")
+                        text = part.get("text")
+                        if text and part_type == "text":
+                            Display.pair_lead_chunk(self.name, text)
+                        elif part_type == "tool_use":
+                            inp = part.get("input", {})
+                            tool_name = part.get("name", "")
+                            code = ""
+                            if tool_name == "Write":
+                                code = inp.get("content", "")
+                            elif tool_name == "Edit":
+                                code = inp.get("new_string", "")
+                            if code:
+                                Display.pair_lead_chunk(self.name, code)
+                elif msg_type == "result":
+                    result_entry = entry
+
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return AgentResult(
+                content="", model=self.name, tokens_used=0,
+                duration_seconds=time.time() - start,
+                success=False, error="Timeout after 1200s",
+            )
+
         duration = time.time() - start
 
-        if result.returncode != 0:
+        if proc.returncode != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
             return AgentResult(
                 content="", model=self.name, tokens_used=0,
                 duration_seconds=duration, success=False,
-                error=result.stderr
+                error=stderr,
             )
 
-        parsed = self._parse_output(result.stdout, duration)
-        return parsed
+        # Extract result from the stream-json result entry
+        if result_entry:
+            return AgentResult(
+                content=result_entry.get("result", ""),
+                model=self.name,
+                tokens_used=0,
+                duration_seconds=duration,
+                success=not result_entry.get("is_error", False),
+                error=result_entry.get("result", "") if result_entry.get("is_error") else None,
+            )
+
+        # Fallback: try parsing all collected lines as regular JSON
+        full_stdout = "".join(lines_collected)
+        return self._parse_output(full_stdout, duration)
 
     def _parse_output(self, stdout, duration):
         """Parse claude -p --output-format json output.

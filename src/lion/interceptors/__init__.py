@@ -7,10 +7,18 @@ closed-loop control over LLM generation via stream interruption.
 
 import shutil
 
-from .base import Chunk, StreamInterceptor, StreamStats
+from .base import (
+    Chunk,
+    InterceptorCapabilities,
+    StreamInterceptor,
+    StreamStats,
+)
 from .claude import ClaudeInterceptor
+from .claude_live import ClaudeLiveInterceptor
 from .gemini import GeminiInterceptor
+from .gemini_acp import GeminiACPInterceptor
 from .codex import CodexInterceptor
+from .codex_app_server import CodexAppServerInterceptor
 
 INTERCEPTORS = {
     "claude": ClaudeInterceptor,
@@ -47,11 +55,15 @@ def get_interceptor(name: str, cwd: str = ".") -> StreamInterceptor:
 
 __all__ = [
     "Chunk",
+    "InterceptorCapabilities",
     "StreamInterceptor",
     "StreamStats",
     "ClaudeInterceptor",
+    "ClaudeLiveInterceptor",
     "GeminiInterceptor",
+    "GeminiACPInterceptor",
     "CodexInterceptor",
+    "CodexAppServerInterceptor",
     "INTERCEPTORS",
     "get_interceptor",
 ]
