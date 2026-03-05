@@ -68,6 +68,22 @@ class TestParseLionInput:
         assert steps[0].function == "pride"
         assert steps[0].args == ["claude", "gemini"]
 
+    def test_fuse_with_agent_count(self):
+        """Test parsing fuse with numeric agent count."""
+        prompt, steps = parse_lion_input('"Design auth" -> fuse(3)')
+        assert prompt == "Design auth"
+        assert len(steps) == 1
+        assert steps[0].function == "fuse"
+        assert steps[0].args == [3]
+
+    def test_fuse_with_explicit_providers(self):
+        """Test parsing fuse with explicit providers."""
+        prompt, steps = parse_lion_input('"Design auth" -> fuse(claude, gemini, codex)')
+        assert prompt == "Design auth"
+        assert len(steps) == 1
+        assert steps[0].function == "fuse"
+        assert steps[0].args == ["claude", "gemini", "codex"]
+
     def test_pipeline_step_with_mixed_args(self):
         """Test parsing pipeline step with mixed argument types."""
         prompt, steps = parse_lion_input('"Build X" -> pr(feature/test)')

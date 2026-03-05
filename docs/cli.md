@@ -2560,7 +2560,7 @@ The lead now knows you use PostgreSQL + SQLAlchemy, so it won't pick MongoDB. Th
 - [ ] `devil(^)` primitive (devil's advocate review)
 
 ### v0.5 -- multi-agent
-- [ ] `fuse()` primitive
+- [x] `fuse()` primitive
 - [ ] `task()` met parallelle worktrees
 - [ ] Mutiny pattern: eye writes fix on interrupt
 - [ ] Auto-complexity: detect which pipeline is needed

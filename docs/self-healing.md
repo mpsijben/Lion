@@ -2,7 +2,7 @@
 
 ## Architecture Changes & New Features
 
-This document describes planned changes to Lion based on analysis of the current codebase and architecture discussions. It covers the pride/impl split, self-healing steps, concurrency, session reuse, per-phase model selection, and smart LLM routing.
+This document describes implemented and ongoing changes to Lion based on analysis of the current codebase and architecture discussions. It covers the pride/impl split, self-healing steps, concurrency, session reuse, per-phase model selection, and smart LLM routing.
 
 ---
 
@@ -446,8 +446,8 @@ The existing `GeminiProvider` in `providers/gemini.py` needs to be extended with
 | `typecheck()` | Type checking + auto-fix | optional: nofix, strict |
 | `future(Nm)` | Time-travel review | N = months/years |
 | `pr(branch)` | Create git branch + PR | optional: branch name |
-| `audit()` | Security audit | (planned) |
-| `onboard()` | Onboarding documentation | (planned) |
+| `audit()` | Security audit | available |
+| `onboard()` | Onboarding documentation | available |
 
 ### Examples
 
@@ -567,17 +567,17 @@ low_pipeline = "impl()"
 
 | Feature | Status |
 |---------|--------|
-| pride/impl split | Planned |
-| review(^) | Planned |
-| devil(^) | Planned |
-| Session reuse (--resume) | Planned |
-| Per-phase profiles | Planned |
-| `=>` concurrent operator | Planned |
-| Gemini for deliberation | Planned |
+| pride/impl split | Implemented |
+| review(^) | Implemented |
+| devil(^) | Implemented |
+| Session reuse (--resume) | Implemented |
+| Per-phase profiles | Implemented |
+| `=>` concurrent operator | Implemented |
+| Gemini for deliberation | Implemented |
 | Custom patterns | Not yet built |
-| Mixed LLMs | Not yet built |
-| audit() | Not yet built |
-| onboard() | Not yet built |
+| Mixed LLMs (`claude`, `gemini`, `codex`) | Implemented |
+| audit() | Implemented |
+| onboard() | Implemented |
 
 ---
 

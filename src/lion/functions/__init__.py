@@ -18,6 +18,7 @@ from .audit import execute_audit
 from .cost import execute_cost
 from .migrate import execute_migrate
 from .pair import execute_pair
+from .fuse import execute_fuse
 
 FUNCTIONS = {
     "pride": execute_pride,
@@ -39,4 +40,5 @@ FUNCTIONS = {
     "cost": execute_cost,
     "migrate": execute_migrate,
     "pair": execute_pair,
+    "fuse": execute_fuse,
 }

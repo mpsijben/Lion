@@ -121,6 +121,18 @@ Internal phases:
 3. **Converge** -- One agent synthesizes everything into a final plan
 4. **Implement** -- The plan is built (writes files)
 
+### fuse(n) -- Fast Deliberation
+
+Runs a faster deliberation cycle than `pride()`:
+1. Parallel propose
+2. Lightweight cross-agent reaction
+3. Final synthesis into a plan
+
+```bash
+lion '"Design auth architecture" -> fuse(3)'
+lion '"Design auth architecture" -> fuse(claude, gemini, codex)'
+```
+
 ### review() -- Code Review
 
 Reviews code for bugs, style, performance, and edge cases.
@@ -215,7 +227,7 @@ lion '"Build API" -> pride(3) -> future(1y)'           # 1 year
 lion '"Build API" -> pride(3) -> future(6m, gemini)'   # With specific provider
 ```
 
-### audit() -- Security Audit (planned)
+### audit() -- Security Audit
 
 OWASP top 10 check, dependency analysis, attack surface review.
 
@@ -223,7 +235,7 @@ OWASP top 10 check, dependency analysis, attack surface review.
 lion '"Build auth" -> pride(3) -> audit()'
 ```
 
-### onboard() -- Documentation (planned)
+### onboard() -- Documentation
 
 Generates onboarding documentation as if a new team member starts tomorrow.
 
@@ -344,6 +356,7 @@ low_pipeline = ""
 |----------|--------|
 | task(n) | Working |
 | pride(n) | Working |
+| fuse(n) | Working |
 | review() | Working |
 | test() | Working |
 | create_tests() | Working |
@@ -353,7 +366,7 @@ low_pipeline = ""
 | devil() | Working |
 | future(Nm) | Working |
 | `<->` / `<N->` | Working |
-| audit() | Not yet built |
-| onboard() | Not yet built |
+| audit() | Working |
+| onboard() | Working |
 | Custom patterns | Not yet built |
-| Mixed LLMs | Not yet built |
+| Mixed LLMs (`claude`, `gemini`, `codex`) | Working |

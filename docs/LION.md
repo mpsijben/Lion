@@ -1558,13 +1558,13 @@ low_pipeline = ""  # single agent, no pipeline
 **Goal**: `lion "prompt" -> pride(3)` works from Claude Code.
 
 Build:
-- [ ] `hook.py` - Intercepts `lion ` prefix in Claude Code
-- [ ] `lion.py` - Main CLI entry point
-- [ ] `parser.py` - Splits prompt from pipeline, parses pipeline functions
-- [ ] `providers/claude.py` - Claude Code CLI wrapper
-- [ ] `functions/pride.py` - Basic pride: propose → critique → converge → implement
-- [ ] `memory.py` - Shared JSONL memory
-- [ ] `display.py` - Terminal output formatting
+- [x] `hook.py` - Intercepts `lion ` prefix in Claude Code
+- [x] `lion.py` - Main CLI entry point
+- [x] `parser.py` - Splits prompt from pipeline, parses pipeline functions
+- [x] `providers/claude.py` - Claude Code CLI wrapper
+- [x] `functions/pride.py` - Basic pride: propose → critique → converge → implement
+- [x] `memory.py` - Shared JSONL memory
+- [x] `display.py` - Terminal output formatting
 
 Test: `lion "Build a hello world API" -> pride(3)` should produce working code.
 
@@ -1572,12 +1572,12 @@ Test: `lion "Build a hello world API" -> pride(3)` should produce working code.
 **Goal**: Full pipeline composition with review and test.
 
 Build:
-- [ ] `pipeline.py` - Pipeline executor that chains functions
-- [ ] `functions/review.py` - Code review function
-- [ ] `functions/test.py` - Test runner with auto-fix
-- [ ] `functions/pr.py` - Git branch + PR creation
-- [ ] `escalation.py` - User interaction for stuck agents
-- [ ] Smart defaults - Complexity detection without LLM
+- [x] `pipeline.py` - Pipeline executor that chains functions
+- [x] `functions/review.py` - Code review function
+- [x] `functions/test.py` - Test runner with auto-fix
+- [x] `functions/pr.py` - Git branch + PR creation
+- [x] `escalation.py` - User interaction for stuck agents
+- [x] Smart defaults - Complexity detection without LLM
 
 Test: `lion "Build Stripe checkout" -> pride(3) -> review() -> test() -> pr("feature/stripe")` should produce reviewed, tested code on a branch.
 
@@ -1585,13 +1585,13 @@ Test: `lion "Build Stripe checkout" -> pride(3) -> review() -> test() -> pr("fea
 **Goal**: Functions that exist nowhere else.
 
 Build:
-- [ ] `functions/devil.py` - Contrarian / devil's advocate
-- [ ] `functions/future.py` - Time-travel review
-- [ ] `functions/onboard.py` - Onboarding documentation
-- [ ] `functions/audit.py` - Security audit
+- [x] `functions/devil.py` - Contrarian / devil's advocate
+- [x] `functions/future.py` - Time-travel review
+- [x] `functions/onboard.py` - Onboarding documentation
+- [x] `functions/audit.py` - Security audit
 - [ ] `functions/explain.py` - Decision documentation
-- [ ] `functions/cost.py` - Infrastructure cost estimation
-- [ ] `functions/migrate.py` - Migration plan generation
+- [x] `functions/cost.py` - Infrastructure cost estimation
+- [x] `functions/migrate.py` - Migration plan generation
 
 Test: `lion "Build auth system" -> pride(3) -> devil() -> future(6m) -> review()` should produce code that has been challenged, future-proofed, and reviewed.
 
@@ -1599,12 +1599,12 @@ Test: `lion "Build auth system" -> pride(3) -> devil() -> future(6m) -> review()
 **Goal**: Mixed LLM support.
 
 Build:
-- [ ] `providers/gemini.py` - Gemini CLI wrapper
+- [x] `providers/gemini.py` - Gemini CLI wrapper
 - [ ] `providers/ollama.py` - Local model wrapper
 - [ ] `providers/api.py` - Generic API wrapper
-- [ ] Provider selection in pride syntax: `pride(claude, gemini, ollama)`
-- [ ] Cost profiles (cheap, balanced, premium)
-- [ ] Cost tracking and rate limit awareness
+- [x] Provider selection in pride syntax (implemented for available providers): `pride(claude, gemini, codex)`
+- [x] Cost profiles (cheap, balanced, premium)
+- [x] Cost tracking and rate limit awareness
 
 Test: `lion "Build feature" -> pride(claude, gemini, ollama) -> review(claude)` should use multiple LLMs in deliberation.
 

@@ -90,7 +90,7 @@ def _get_model_variants(provider: str) -> list[str]:
 
 
 # Functions that take arguments (show with parentheses)
-FUNCTIONS_WITH_ARGS = {"pair", "pride", "review", "devil", "future", "task"}
+FUNCTIONS_WITH_ARGS = {"pair", "pride", "fuse", "review", "devil", "future", "task"}
 
 # Pride agent count suggestions
 PRIDE_SUGGESTIONS = ["3", "5", "7"]
