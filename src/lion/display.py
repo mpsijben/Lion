@@ -124,6 +124,7 @@ class Display:
             "test": "\U0001f9ea",       # test tube
             "pr": "\U0001f680",         # rocket
             "refine": "\U0001f504",     # counterclockwise arrows (feedback loop)
+            "gate": "\U0000270b",       # raised hand
         }
         icon = icons.get(name, ">")
         _print(f"\n   {icon} {BOLD}{name.upper()}{RESET}: {description}")

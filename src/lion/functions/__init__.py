@@ -19,6 +19,7 @@ from .cost import execute_cost
 from .migrate import execute_migrate
 from .pair import execute_pair
 from .fuse import execute_fuse
+from .gate import execute_gate
 
 FUNCTIONS = {
     "pride": execute_pride,
@@ -41,4 +42,5 @@ FUNCTIONS = {
     "migrate": execute_migrate,
     "pair": execute_pair,
     "fuse": execute_fuse,
+    "gate": execute_gate,
 }

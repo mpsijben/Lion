@@ -133,6 +133,19 @@ lion '"Design auth architecture" -> fuse(3)'
 lion '"Design auth architecture" -> fuse(claude, gemini, codex)'
 ```
 
+### gate() -- Human-in-the-Loop
+
+Pauses the pipeline for human review. View the output so far, then:
+- **Enter** -- approve and continue
+- **Type feedback** -- an agent revises the plan with your feedback, then continues
+- **q** -- abort the pipeline
+
+```bash
+lion '"Build auth" -> fuse(3) -> gate() -> impl()'          # Review plan before implementing
+lion '"Build API" -> pride(3) -> gate() -> test()'           # Review code before testing
+lion '"Build auth" -> fuse(3) -> gate() -> impl() -> gate()' # Multiple checkpoints
+```
+
 ### review() -- Code Review
 
 Reviews code for bugs, style, performance, and edge cases.
@@ -357,6 +370,7 @@ low_pipeline = ""
 | task(n) | Working |
 | pride(n) | Working |
 | fuse(n) | Working |
+| gate() | Working |
 | review() | Working |
 | test() | Working |
 | create_tests() | Working |
