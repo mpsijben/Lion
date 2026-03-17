@@ -4,8 +4,8 @@ One lead agent generates code while "eye" agents monitor the stream
 and can interrupt when they spot issues. Closed-loop control for LLM generation.
 
 Usage in pipeline:
-    "Build auth" -> pair(claude, eyes: sec+arch)
-    "Build API" -> pair(claude.opus, eyes: sec.gemini+arch.haiku)
+    "Build auth" -> pair(claude, eyes: claude+gemini::arch)
+    "Build API" -> pair(claude.opus, eyes: gemini::sec+haiku::arch)
 """
 
 import queue
@@ -57,25 +57,50 @@ class EyeConfig:
             return self.interceptor
 
 
-def _parse_eyes(eyes_str: str, default_provider: str, cwd: str) -> list[EyeConfig]:
+def _parse_eyes(
+    eyes_str: str,
+    default_provider: str,
+    cwd: str,
+    prompt: str = "",
+) -> list[EyeConfig]:
     """Parse eyes specification into EyeConfig list.
 
-    Formats:
-        "sec+arch"                    -> use default provider for all eyes
-        "sec.gemini+arch.haiku"       -> per-eye provider override
-        "sec+arch.gemini+perf"        -> mixed: some default, some override
+    Provider-first format with :: lens syntax:
+        "claude+gemini"               -> auto-assign lenses per eye
+        "gemini::arch+claude::sec"    -> explicit lens per eye
+        "claude+gemini::arch"         -> mixed: auto-assign + explicit
     """
-    eyes = []
-    for part in eyes_str.split("+"):
-        part = part.strip()
-        if not part:
-            continue
+    parts = [p.strip() for p in eyes_str.split("+") if p.strip()]
 
-        if "." in part:
-            lens_name, provider = part.split(".", 1)
+    # Collect explicitly assigned lenses so auto-assign can exclude them
+    explicit_lenses = []
+    for part in parts:
+        if "::" in part:
+            _, lens_name = part.split("::", 1)
+            explicit_lenses.append(lens_name)
+
+    # Count how many eyes need auto-assigned lenses
+    n_auto = sum(1 for p in parts if "::" not in p)
+    if n_auto > 0:
+        auto_lenses = [
+            l for l in auto_assign_lenses(prompt, n_auto + len(explicit_lenses))
+            if l not in explicit_lenses
+        ][:n_auto]
+    else:
+        auto_lenses = []
+
+    auto_idx = 0
+    eyes = []
+    for part in parts:
+        if "::" in part:
+            provider, lens_name = part.split("::", 1)
         else:
-            lens_name = part
-            provider = default_provider
+            provider = part
+            if auto_idx < len(auto_lenses):
+                lens_name = auto_lenses[auto_idx]
+                auto_idx += 1
+            else:
+                lens_name = "arch"  # fallback
 
         lens = get_lens(lens_name)
         if lens is None:
@@ -644,7 +669,7 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
 
     Args:
         step.args[0]: Lead model name (e.g. "claude", "claude.opus"). Optional.
-        step.kwargs["eyes"]: Eye specification (e.g. "sec+arch", "sec.gemini+arch.haiku"). Optional.
+        step.kwargs["eyes"]: Eye specification (e.g. "claude+gemini::arch", "gemini::sec+haiku::arch"). Optional.
     """
     pair_config = config.get("pair", {})
     first_check_lines = pair_config.get("first_check_lines", 5)
@@ -660,21 +685,24 @@ def execute_pair(prompt, previous, step, memory, config, cwd, cost_manager=None)
     # Parse eyes
     eyes_str = step.kwargs.get("eyes", "")
     if eyes_str:
-        eyes = _parse_eyes(eyes_str, default_provider=default_provider, cwd=cwd)
+        eyes = _parse_eyes(
+            eyes_str, default_provider=default_provider, cwd=cwd, prompt=prompt,
+        )
     else:
         # Auto-assign lenses based on task
         lens_names = auto_assign_lenses(prompt, 2)
         eyes = _parse_eyes(
-            "+".join(lens_names),
+            "+".join(f"{default_provider}::{l}" for l in lens_names),
             default_provider=default_provider,
             cwd=cwd,
+            prompt=prompt,
         )
 
-    # Display - show provider-qualified names when eye uses non-default provider
+    # Display - show provider::lens labels
     eye_labels = []
     for e in eyes:
         if e.provider != default_provider:
-            eye_labels.append(f"{e.lens_name}.{e.provider}")
+            eye_labels.append(f"{e.provider}::{e.lens_name}")
         else:
             eye_labels.append(e.lens_name)
     Display.pair_start(lead_model, eye_labels)

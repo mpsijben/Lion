@@ -80,9 +80,9 @@ class WaitCapableLeadInterceptor(MockInterceptor):
 
 class TestParseEyes:
     @patch("lion.functions.pair.get_interceptor")
-    def test_parse_simple_eyes(self, mock_get):
+    def test_parse_explicit_lenses(self, mock_get):
         mock_get.return_value = MockInterceptor()
-        eyes = _parse_eyes("sec+arch", "claude", "/tmp")
+        eyes = _parse_eyes("claude::sec+claude::arch", "claude", "/tmp")
         assert len(eyes) == 2
         assert eyes[0].lens_name == "sec"
         assert eyes[1].lens_name == "arch"
@@ -92,7 +92,7 @@ class TestParseEyes:
     @patch("lion.functions.pair.get_interceptor")
     def test_parse_cross_model_eyes(self, mock_get):
         mock_get.return_value = MockInterceptor()
-        eyes = _parse_eyes("sec.gemini+arch.codex", "claude", "/tmp")
+        eyes = _parse_eyes("gemini::sec+codex::arch", "claude", "/tmp")
         assert len(eyes) == 2
         assert eyes[0].lens_name == "sec"
         assert eyes[0].provider == "gemini"
@@ -100,24 +100,37 @@ class TestParseEyes:
         assert eyes[1].provider == "codex"
 
     @patch("lion.functions.pair.get_interceptor")
-    def test_parse_single_eye(self, mock_get):
+    def test_parse_single_eye_explicit(self, mock_get):
         mock_get.return_value = MockInterceptor()
-        eyes = _parse_eyes("sec", "claude", "/tmp")
+        eyes = _parse_eyes("claude::sec", "claude", "/tmp")
         assert len(eyes) == 1
         assert eyes[0].lens_name == "sec"
+        assert eyes[0].provider == "claude"
 
     @patch("lion.functions.pair.get_interceptor")
-    def test_parse_mixed_default_and_override(self, mock_get):
+    def test_parse_auto_assign_lens(self, mock_get):
+        """Eye without :: gets auto-assigned a lens."""
         mock_get.return_value = MockInterceptor()
-        eyes = _parse_eyes("sec+arch.gemini+perf", "claude", "/tmp")
-        assert len(eyes) == 3
+        eyes = _parse_eyes("claude", "claude", "/tmp", prompt="build auth login")
+        assert len(eyes) == 1
         assert eyes[0].provider == "claude"
+        assert eyes[0].lens_name == "sec"  # auth keyword -> sec lens
+
+    @patch("lion.functions.pair.get_interceptor")
+    def test_parse_mixed_explicit_and_auto(self, mock_get):
+        mock_get.return_value = MockInterceptor()
+        eyes = _parse_eyes(
+            "claude+gemini::arch", "claude", "/tmp", prompt="build auth"
+        )
+        assert len(eyes) == 2
+        assert eyes[0].provider == "claude"
+        assert eyes[0].lens_name == "sec"  # auto-assigned, arch excluded
         assert eyes[1].provider == "gemini"
-        assert eyes[2].provider == "claude"
+        assert eyes[1].lens_name == "arch"
 
     def test_parse_unknown_lens_raises(self):
         with pytest.raises(ValueError, match="Unknown lens"):
-            _parse_eyes("nonexistent", "claude", "/tmp")
+            _parse_eyes("claude::nonexistent", "claude", "/tmp")
 
 
 class TestEyeConfigName:
